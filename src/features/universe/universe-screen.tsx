@@ -1,3 +1,4 @@
+import { usePathname } from 'expo-router';
 import { SymbolView, type AndroidSymbol, type SFSymbol } from 'expo-symbols';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
@@ -16,10 +17,10 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { BottomTabInset } from '@/constants/theme';
+import { useRecording } from '@/features/recording/recording-state';
 
 import {
   StoryNode,
-  SubtopicNode,
   TopicNode,
   universeData,
   UniverseCategory,
@@ -36,10 +37,7 @@ type Layout = {
   height: number;
 };
 
-type SelectedNode =
-  | { kind: 'topic'; id: string; node: TopicNode }
-  | { kind: 'subtopic'; id: string; node: SubtopicNode }
-  | { kind: 'story'; id: string; node: StoryNode };
+type SelectedNode = { kind: 'topic'; id: string; node: TopicNode };
 
 type GenerationAction = {
   icon: [AndroidSymbol, SFSymbol, AndroidSymbol];
@@ -48,9 +46,12 @@ type GenerationAction = {
   pick: boolean;
 };
 
-const MIN_SCALE = 0.28;
-const MAX_SCALE = 7.8;
-const WORLD_PADDING = 82;
+type UniverseMode = 'universe' | 'record';
+
+const INITIAL_SCALE = 0.72;
+const MIN_SCALE = 0.54;
+const MAX_SCALE = 6.6;
+const WORLD_PADDING = 38;
 const SPACE = '#03050c';
 const PANEL = 'rgba(8, 12, 23, 0.94)';
 const PANEL_SOFT = 'rgba(255, 246, 231, 0.07)';
@@ -151,6 +152,70 @@ function pointFor(camera: Camera, layout: Layout, node: { x: number; y: number }
   };
 }
 
+function recordTarget(layout: Layout) {
+  return {
+    x: layout.width / 2,
+    y: layout.height * 0.48,
+  };
+}
+
+function morphNodeStyle({
+  endOpacity,
+  endScale,
+  layout,
+  morphProgress,
+  point,
+  startOpacity = 1,
+}: {
+  endOpacity: number;
+  endScale: number;
+  layout: Layout;
+  morphProgress: Animated.Value;
+  point: { x: number; y: number };
+  startOpacity?: number;
+}) {
+  const target = recordTarget(layout);
+  const delay = 0.04 + Math.abs(Math.sin(point.x * 0.013 + point.y * 0.019)) * 0.18;
+  const crashAt = Math.min(0.78, delay + 0.5);
+  const midTransit = (delay + crashAt) / 2;
+  const overshootX = (target.x - point.x) * 1.06;
+  const overshootY = (target.y - point.y) * 1.06;
+  const peakOpacity = Math.min(1, startOpacity * 1.25);
+
+  return {
+    opacity: morphProgress.interpolate({
+      inputRange: [0, delay, midTransit, crashAt, 0.94, 1],
+      outputRange: [startOpacity, startOpacity, peakOpacity, peakOpacity * 0.92, startOpacity * 0.55, endOpacity],
+    }),
+    transform: [
+      {
+        translateX: morphProgress.interpolate({
+          inputRange: [0, delay, crashAt, 1],
+          outputRange: [0, 0, overshootX, target.x - point.x],
+        }),
+      },
+      {
+        translateY: morphProgress.interpolate({
+          inputRange: [0, delay, crashAt, 1],
+          outputRange: [0, 0, overshootY, target.y - point.y],
+        }),
+      },
+      {
+        scale: morphProgress.interpolate({
+          inputRange: [0, delay, midTransit, crashAt, 1],
+          outputRange: [1, 1, 1.4, 0.6, endScale],
+        }),
+      },
+      {
+        rotateZ: morphProgress.interpolate({
+          inputRange: [0, crashAt, 1],
+          outputRange: ['0deg', point.x > target.x ? '-14deg' : '14deg', '0deg'],
+        }),
+      },
+    ],
+  };
+}
+
 function cameraForFocusedNode(node: { x: number; y: number }, scale: number, layout: Layout): Camera {
   if (!layout.width || !layout.height) {
     return { x: node.x, y: node.y, scale };
@@ -187,50 +252,76 @@ function initialCamera(layout: Layout): Camera {
     (layout.width - WORLD_PADDING) / worldWidth,
     (layout.height - WORLD_PADDING * 1.6) / worldHeight,
   );
+  const centerX = (universeData.bounds.minX + universeData.bounds.maxX) / 2;
+  const centerY = (universeData.bounds.minY + universeData.bounds.maxY) / 2;
 
   return {
-    x: 0,
-    y: 0,
-    scale: clamp(fitScale, MIN_SCALE, 0.72),
+    x: centerX,
+    y: centerY + 12,
+    scale: clamp(Math.max(fitScale * 1.18, INITIAL_SCALE), MIN_SCALE, 1.08),
   };
 }
 
-function selectedTopicId(selected: SelectedNode | null) {
-  if (!selected) {
-    return null;
-  }
 
-  if (selected.kind === 'topic') {
-    return selected.node.id;
-  }
+function worldViewport(camera: Camera, layout: Layout, padding = 72) {
+  const halfWidth = (layout.width / 2 + padding) / camera.scale;
+  const halfHeight = (layout.height / 2 + padding) / camera.scale;
 
-  if (selected.kind === 'subtopic') {
-    return selected.node.topic;
-  }
-
-  return selected.node.topic;
+  return {
+    maxX: camera.x + halfWidth,
+    maxY: camera.y + halfHeight,
+    minX: camera.x - halfWidth,
+    minY: camera.y - halfHeight,
+  };
 }
 
-export function UniverseScreen() {
+function isInWorldViewport(
+  node: { x: number; y: number },
+  viewport: ReturnType<typeof worldViewport>,
+  radius = 0,
+) {
+  return (
+    node.x + radius >= viewport.minX &&
+    node.x - radius <= viewport.maxX &&
+    node.y + radius >= viewport.minY &&
+    node.y - radius <= viewport.maxY
+  );
+}
+
+export function UniverseScreen({ mode = 'universe' }: { mode?: UniverseMode } = {}) {
   const insets = useSafeAreaInsets();
   const navigationInset = (Platform.OS === 'web' ? 84 : BottomTabInset) + insets.bottom;
+  const isRecordMode = mode === 'record';
   const [layout, setLayout] = useState<Layout>({ width: 0, height: 0 });
-  const [camera, setCamera] = useState<Camera>({ x: 0, y: 0, scale: 0.45 });
+  const [camera, setCamera] = useState<Camera>({ x: 0, y: 0, scale: INITIAL_SCALE });
   const [selected, setSelected] = useState<SelectedNode | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
   const [query, setQuery] = useState('');
   const [showHint, setShowHint] = useState(true);
   const cameraRef = useRef(camera);
+  const cameraFrameRef = useRef<number | null>(null);
   const layoutRef = useRef(layout);
   const animationRef = useRef<number | null>(null);
   const longPressRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const morphProgress = useRef(new Animated.Value(mode === 'record' ? 0 : 1)).current;
+  const pathname = usePathname();
+  const isOnRoute =
+    (mode === 'record' && pathname === '/record') || (mode === 'universe' && pathname === '/');
   const queryValue = normalize(query);
 
   const setCameraState = useCallback((next: Camera | ((current: Camera) => Camera)) => {
     const value = typeof next === 'function' ? next(cameraRef.current) : next;
     cameraRef.current = value;
-    setCamera(value);
+
+    if (cameraFrameRef.current !== null) {
+      return;
+    }
+
+    cameraFrameRef.current = requestAnimationFrame(() => {
+      cameraFrameRef.current = null;
+      setCamera(cameraRef.current);
+    });
   }, []);
 
   useEffect(() => {
@@ -244,6 +335,10 @@ export function UniverseScreen() {
   useEffect(() => () => {
     if (animationRef.current !== null) {
       cancelAnimationFrame(animationRef.current);
+    }
+
+    if (cameraFrameRef.current !== null) {
+      cancelAnimationFrame(cameraFrameRef.current);
     }
 
     if (longPressRef.current) {
@@ -260,7 +355,35 @@ export function UniverseScreen() {
     return () => clearTimeout(timeout);
   }, [showHint]);
 
-  const selectedTopic = selectedTopicId(selected);
+  useEffect(() => {
+    if (!isOnRoute) {
+      return;
+    }
+
+    morphProgress.setValue(isRecordMode ? 0 : 1);
+
+    const handle = requestAnimationFrame(() => {
+      Animated.timing(morphProgress, {
+        toValue: isRecordMode ? 1 : 0,
+        duration: 1500,
+        easing: Easing.inOut(Easing.cubic),
+        useNativeDriver: true,
+      }).start();
+    });
+
+    return () => cancelAnimationFrame(handle);
+  }, [isOnRoute, isRecordMode, morphProgress]);
+
+  useEffect(() => {
+    if (!isRecordMode) {
+      return;
+    }
+
+    setSelected(null);
+    setMenuOpen(false);
+    setSearchOpen(false);
+    setShowHint(false);
+  }, [isRecordMode]);
 
   const activeTopics = useMemo(() => {
     const ids = new Set<string>();
@@ -269,26 +392,16 @@ export function UniverseScreen() {
       return ids;
     }
 
-    if (selected.kind === 'topic') {
-      ids.add(selected.node.id);
-      universeData.topicEdges.forEach(([a, b]) => {
-        if (a === selected.node.id) {
-          ids.add(b);
-        }
+    ids.add(selected.node.id);
+    universeData.topicEdges.forEach(([a, b]) => {
+      if (a === selected.node.id) {
+        ids.add(b);
+      }
 
-        if (b === selected.node.id) {
-          ids.add(a);
-        }
-      });
-      return ids;
-    }
-
-    if (selected.kind === 'story') {
-      selected.node.topics.forEach((topicId) => ids.add(topicId));
-      return ids;
-    }
-
-    ids.add(selected.node.topic);
+      if (b === selected.node.id) {
+        ids.add(a);
+      }
+    });
     return ids;
   }, [selected]);
 
@@ -299,14 +412,8 @@ export function UniverseScreen() {
       return ids;
     }
 
-    if (selected.kind === 'story') {
-      ids.add(selected.node.id);
-      return ids;
-    }
-
-    const topicId = selected.kind === 'topic' ? selected.node.id : selected.node.topic;
     universeData.stories.forEach((story) => {
-      if (story.topics.includes(topicId)) {
+      if (story.topic === selected.node.id) {
         ids.add(story.id);
       }
     });
@@ -378,14 +485,6 @@ export function UniverseScreen() {
     [animateCameraTo],
   );
 
-  const zoomToStory = useCallback(
-    (story: StoryNode) => {
-      const nextScale = Math.max(cameraRef.current.scale, 5.4);
-      animateCameraTo(cameraForFocusedNode(story, nextScale, layoutRef.current), 780, 'dive');
-    },
-    [animateCameraTo],
-  );
-
   const resetUniverse = useCallback(() => {
     const currentLayout = layoutRef.current;
 
@@ -408,7 +507,7 @@ export function UniverseScreen() {
 
       setLayout(nextLayout);
       setCameraState((current) => {
-        if (current.scale !== 0.45 || !nextLayout.width || !nextLayout.height) {
+        if (current.scale !== INITIAL_SCALE || !nextLayout.width || !nextLayout.height) {
           return current;
         }
 
@@ -430,52 +529,22 @@ export function UniverseScreen() {
       let best: SelectedNode | null = null;
       let bestDistance = Infinity;
 
-      const consider = (
-        node: TopicNode | SubtopicNode | StoryNode,
-        kind: SelectedNode['kind'],
-        radius: number,
-      ) => {
-        if (kind === 'topic' && !matchesTopic(node as TopicNode, queryValue)) {
+      universeData.topics.forEach((topic) => {
+        if (!matchesTopic(topic, queryValue)) {
           return;
         }
 
-        if (kind === 'story' && !matchesStory(node as StoryNode, queryValue)) {
-          return;
-        }
-
-        const point = pointFor(currentCamera, currentLayout, node);
+        const point = pointFor(currentCamera, currentLayout, topic);
         const dx = point.x - x;
         const dy = point.y - y;
         const distance = Math.sqrt(dx * dx + dy * dy);
+        const radius = Math.max(topic.coreRadius * currentCamera.scale * 2.4, 30);
 
         if (distance <= radius && distance < bestDistance) {
           bestDistance = distance;
-
-          if (kind === 'topic') {
-            best = { kind, id: node.id, node: node as TopicNode };
-          } else if (kind === 'story') {
-            best = { kind, id: node.id, node: node as StoryNode };
-          } else {
-            best = { kind, id: node.id, node: node as SubtopicNode };
-          }
+          best = { kind: 'topic', id: topic.id, node: topic };
         }
-      };
-
-      universeData.topics.forEach((topic) => {
-        consider(topic, 'topic', Math.max(topic.coreRadius * currentCamera.scale * 2.2, 26));
       });
-
-      if (currentCamera.scale > 1.25) {
-        universeData.subtopics.forEach((subtopic) => {
-          consider(subtopic, 'subtopic', Math.max(subtopic.radius * currentCamera.scale * 2, 16));
-        });
-      }
-
-      if (currentCamera.scale > 1.65) {
-        universeData.stories.forEach((story) => {
-          consider(story, 'story', Math.max(story.radius * currentCamera.scale * 2.3, 15));
-        });
-      }
 
       return best;
     },
@@ -487,24 +556,9 @@ export function UniverseScreen() {
       setSelected(hit);
       setMenuOpen(false);
       setShowHint(false);
-
-      if (hit.kind === 'topic') {
-        zoomToTopic(hit.node);
-      }
-
-      if (hit.kind === 'story') {
-        zoomToStory(hit.node);
-      }
-
-      if (hit.kind === 'subtopic') {
-        animateCameraTo(
-          cameraForFocusedNode(hit.node, Math.max(cameraRef.current.scale, 4.6), layoutRef.current),
-          720,
-          'dive',
-        );
-      }
+      zoomToTopic(hit.node);
     },
-    [animateCameraTo, zoomToStory, zoomToTopic],
+    [zoomToTopic],
   );
 
   const panState = useRef({
@@ -658,56 +712,103 @@ export function UniverseScreen() {
   );
 
   const topicLabels = useMemo(() => {
-    if (!layout.width || !layout.height) {
+    if (isRecordMode || !layout.width || !layout.height) {
       return [];
     }
 
-    const opacity = queryValue ? 1 : clamp((camera.scale - 0.82) / 0.44, 0, 1);
+    const opacity = queryValue ? 1 : clamp((camera.scale - 0.72) / 0.54, 0, 1);
 
     if (opacity <= 0.02) {
       return [];
     }
 
-    return universeData.topics
+    const maxLabels = queryValue
+      ? universeData.topics.length
+      : camera.scale < 1.1
+        ? 10
+        : camera.scale < 1.55
+          ? 15
+          : camera.scale < 2.25
+            ? 20
+            : universeData.topics.length;
+    const usedRects: { bottom: number; left: number; right: number; top: number }[] = [];
+    const labels: {
+      count: number;
+      id: string;
+      label: string;
+      opacity: number;
+      width: number;
+      x: number;
+      y: number;
+    }[] = [];
+
+    const candidates = universeData.topics
       .filter((topic) => matchesTopic(topic, queryValue) || activeTopics.has(topic.id))
-      .map((topic) => {
+      .flatMap((topic) => {
+        if (!queryValue && !activeTopics.has(topic.id) && camera.scale < 1.18 && topic.storyCount < 18) {
+          return [];
+        }
+
         const point = pointFor(camera, layout, topic);
-        const radius = clamp(topic.coreRadius * camera.scale, 5, 74);
 
-        return {
-          id: topic.id,
-          label: topic.label,
-          count: topic.storyCount,
-          opacity: activeTopics.has(topic.id) ? 1 : opacity,
-          x: point.x,
-          y: point.y + radius + 8,
+        if (point.x < -120 || point.x > layout.width + 120 || point.y < -80 || point.y > layout.height + 120) {
+          return [];
+        }
+
+        const radius = clamp(3.4 + topic.coreRadius * camera.scale * 0.68, 5.4, 34);
+        const width = clamp(topic.label.length * 8.1 + 26, 84, camera.scale > 1.55 ? 168 : 136);
+        const y = point.y + radius + 7;
+        const rect = {
+          bottom: y + 35,
+          left: point.x - width / 2,
+          right: point.x + width / 2,
+          top: y - 2,
         };
+
+        return [
+          {
+            count: topic.storyCount,
+            force: Boolean(queryValue) || activeTopics.has(topic.id),
+            id: topic.id,
+            label: topic.label,
+            opacity: activeTopics.has(topic.id) ? 1 : opacity,
+            rect,
+            score: (activeTopics.has(topic.id) ? 1000 : 0) + topic.storyCount,
+            width,
+            x: point.x,
+            y,
+          },
+        ];
+      })
+      .sort((a, b) => b.score - a.score);
+
+    candidates.forEach((candidate) => {
+      const overlaps = usedRects.some(
+        (rect) =>
+          candidate.rect.left < rect.right + 9 &&
+          candidate.rect.right > rect.left - 9 &&
+          candidate.rect.top < rect.bottom + 7 &&
+          candidate.rect.bottom > rect.top - 7,
+      );
+
+      if (!candidate.force && (overlaps || labels.length >= maxLabels)) {
+        return;
+      }
+
+      usedRects.push(candidate.rect);
+      labels.push({
+        count: candidate.count,
+        id: candidate.id,
+        label: candidate.label,
+        opacity: candidate.opacity,
+        width: candidate.width,
+        x: candidate.x,
+        y: candidate.y,
       });
-  }, [activeTopics, camera, layout, queryValue]);
-
-  const storyLabels = useMemo(() => {
-    if (!layout.width || !layout.height || camera.scale < 3.7) {
-      return [];
-    }
-
-    const opacity = clamp((camera.scale - 3.7) / 1.6, 0, 0.92);
-    let visible = 0;
-
-    return universeData.stories.flatMap((story) => {
-      if (visible >= 44 || (!activeStories.has(story.id) && !matchesStory(story, queryValue))) {
-        return [];
-      }
-
-      const point = pointFor(camera, layout, story);
-
-      if (point.x < -120 || point.x > layout.width + 120 || point.y < -60 || point.y > layout.height + 60) {
-        return [];
-      }
-
-      visible += 1;
-      return [{ ...point, id: story.id, title: story.title, opacity: activeStories.has(story.id) ? 1 : opacity }];
     });
-  }, [activeStories, camera, layout, queryValue]);
+
+    return labels;
+  }, [activeTopics, camera, isRecordMode, layout, queryValue]);
 
   const hint = camera.scale < 1 ? 'Drag to swim through your life graph' : camera.scale < 2.6 ? 'Tap a glow to enter a topic' : 'Long-press a node to generate';
 
@@ -723,8 +824,9 @@ export function UniverseScreen() {
             activeTopics={activeTopics}
             camera={camera}
             layout={layout}
+            morphProgress={morphProgress}
             query={queryValue}
-            selectedTopic={selectedTopic}
+            recordMode={isRecordMode}
           />
         )}
       </View>
@@ -733,12 +835,10 @@ export function UniverseScreen() {
         {topicLabels.map((label) => (
           <TopicLabel key={label.id} {...label} />
         ))}
-        {storyLabels.map((label) => (
-          <StoryLabel key={label.id} {...label} />
-        ))}
       </View>
 
       <View pointerEvents="box-none" style={StyleSheet.absoluteFill}>
+        {!isRecordMode && (
         <View pointerEvents="box-none" style={[styles.topChrome, { top: insets.top + 14 }]}>
           {searchOpen ? (
             <View style={styles.searchPanel}>
@@ -780,27 +880,18 @@ export function UniverseScreen() {
             </>
           )}
         </View>
+        )}
 
-        {showHint && !selected && !menuOpen && (
+        {showHint && !isRecordMode && !selected && !menuOpen && (
           <View pointerEvents="none" style={[styles.hint, { bottom: navigationInset + 88 }]}>
             <Text style={styles.hintText}>{hint}</Text>
           </View>
         )}
 
-        {!selected && !menuOpen && (
-          <Pressable
-            accessibilityLabel="Record a story"
-            style={({ pressed }) => [
-              styles.recordButton,
-              { bottom: navigationInset + 20 },
-              pressed && styles.pressed,
-            ]}>
-            <SymbolIcon android="mic" ios="mic.fill" web="mic" size={23} color={SPACE} />
-          </Pressable>
-        )}
+        <RecordNodeOverlay active={isRecordMode} layout={layout} morphProgress={morphProgress} />
       </View>
 
-      {selected && !menuOpen && (
+      {!isRecordMode && selected && !menuOpen && (
         <NodeSheet
           bottomInset={navigationInset}
           layout={layout}
@@ -818,7 +909,7 @@ export function UniverseScreen() {
         />
       )}
 
-      {selected && menuOpen && (
+      {!isRecordMode && selected && menuOpen && (
         <ActionMenu bottomInset={navigationInset} onClose={() => setMenuOpen(false)} selected={selected} />
       )}
     </View>
@@ -830,20 +921,40 @@ function GraphLayer({
   activeTopics,
   camera,
   layout,
+  morphProgress,
   query,
-  selectedTopic,
+  recordMode,
 }: {
   activeStories: Set<string>;
   activeTopics: Set<string>;
   camera: Camera;
   layout: Layout;
+  morphProgress: Animated.Value;
   query: string;
-  selectedTopic: string | null;
+  recordMode: boolean;
 }) {
-  const bridgeStories = universeData.stories.filter((story) => story.topics.length > 1);
-  const localStories = selectedTopic
-    ? universeData.stories.filter((story) => story.topics.includes(selectedTopic)).slice(0, 22)
-    : [];
+  const viewport = useMemo(() => worldViewport(camera, layout, camera.scale < 0.82 ? 96 : 132), [camera, layout]);
+  const visibleStories = useMemo(
+    () =>
+      universeData.stories.filter(
+        (story) =>
+          (query ? matchesStory(story, query) || activeStories.has(story.id) : true) &&
+          isInWorldViewport(story, viewport, 20 / camera.scale),
+      ),
+    [activeStories, camera.scale, query, viewport],
+  );
+  const visibleTopics = useMemo(
+    () =>
+      universeData.topics.filter((topic) =>
+        isInWorldViewport(topic, viewport, topic.clusterRadius + 36 / camera.scale),
+      ),
+    [camera.scale, viewport],
+  );
+
+  const storyFadeOpacity = morphProgress.interpolate({
+    inputRange: [0, 0.32, 1],
+    outputRange: [1, 0.2, 0],
+  });
 
   return (
     <View pointerEvents="none" style={StyleSheet.absoluteFill}>
@@ -853,84 +964,39 @@ function GraphLayer({
         const active = activeTopics.has(fromId) && activeTopics.has(toId);
 
         return (
-          <GraphLine
-            active={active}
-            key={`${fromId}-${toId}`}
-            color={active ? ACTIVE_EDGE : DORMANT_EDGE}
-            from={pointFor(camera, layout, from)}
-            opacity={active ? 0.78 : 0.5}
-            thickness={active ? 1.75 : 0.75}
-            to={pointFor(camera, layout, to)}
+            <GraphLine
+              active={active}
+              key={`${fromId}-${toId}`}
+              color={active ? ACTIVE_EDGE : DORMANT_EDGE}
+              from={pointFor(camera, layout, from)}
+              morphProgress={morphProgress}
+              opacity={active ? 0.78 : 0.5}
+              thickness={active ? 1.75 : 0.75}
+              to={pointFor(camera, layout, to)}
           />
         );
       })}
 
-      {camera.scale > 1.12 &&
-        bridgeStories.map((story) =>
-          story.topics.slice(1).map((topicId) => {
-            const topic = universeData.topicById[topicId];
-            const active = activeStories.has(story.id) || activeTopics.has(topicId) || activeTopics.has(story.topic);
-
-            return (
-              <GraphLine
-                active={active}
-                key={`${story.id}-${topicId}`}
-                color={active ? ACTIVE_EDGE : 'rgba(190, 198, 212, 0.12)'}
-                from={pointFor(camera, layout, story)}
-                opacity={active ? 0.92 : 0.58}
-                thickness={active ? 1.3 : 0.7}
-                to={pointFor(camera, layout, topic)}
-              />
-            );
-          }),
-        )}
-
-      {selectedTopic &&
-        localStories.map((story) => {
-          const topic = universeData.topicById[selectedTopic];
-
-          return (
-            <GraphLine
-              active
-              key={`local-${story.id}`}
-              color="rgba(255, 150, 92, 0.46)"
-              from={pointFor(camera, layout, story)}
-              opacity={0.74}
-              thickness={0.9}
-              to={pointFor(camera, layout, topic)}
-            />
-          );
-        })}
-
-      {universeData.stories.map((story) => (
+      {visibleStories.map((story) => (
         <StoryDot
           key={story.id}
           active={activeStories.has(story.id)}
           camera={camera}
-          dimmed={Boolean(query) && !matchesStory(story, query)}
+          fadeOpacity={storyFadeOpacity}
           layout={layout}
           story={story}
         />
       ))}
 
-      {camera.scale > 1.35 &&
-        universeData.subtopics.map((subtopic) => (
-          <SubtopicDot
-            key={subtopic.id}
-            active={activeTopics.has(subtopic.topic)}
-            camera={camera}
-            layout={layout}
-            subtopic={subtopic}
-          />
-        ))}
-
-      {universeData.topics.map((topic) => (
+      {visibleTopics.map((topic) => (
         <TopicCluster
           key={topic.id}
           active={activeTopics.has(topic.id)}
           camera={camera}
           dimmed={Boolean(query) && !matchesTopic(topic, query)}
           layout={layout}
+          morphProgress={morphProgress}
+          recordMode={recordMode}
           topic={topic}
         />
       ))}
@@ -976,6 +1042,7 @@ function GraphLine({
   active = false,
   color,
   from,
+  morphProgress,
   opacity,
   thickness,
   to,
@@ -983,6 +1050,7 @@ function GraphLine({
   active?: boolean;
   color: string;
   from: { x: number; y: number };
+  morphProgress?: Animated.Value;
   opacity: number;
   thickness: number;
   to: { x: number; y: number };
@@ -996,18 +1064,29 @@ function GraphLine({
   }
 
   const angle = Math.atan2(dy, dx);
+  const lineOpacity = morphProgress
+    ? morphProgress.interpolate({
+        inputRange: [0, 0.7, 1],
+        outputRange: [opacity, opacity * 0.18, 0],
+      })
+    : opacity;
 
   return (
     <>
       {active && (
-        <View
+        <Animated.View
           style={[
             styles.graphLineGlow,
             {
               backgroundColor: 'rgba(255, 150, 92, 0.14)',
               height: thickness * 4,
               left: (from.x + to.x) / 2 - length / 2,
-              opacity: opacity * 0.78,
+              opacity: morphProgress
+                ? morphProgress.interpolate({
+                    inputRange: [0, 0.7, 1],
+                    outputRange: [opacity * 0.78, opacity * 0.12, 0],
+                  })
+                : opacity * 0.78,
               top: (from.y + to.y) / 2 - thickness * 2,
               transform: [{ rotateZ: `${angle}rad` }],
               width: length,
@@ -1015,14 +1094,14 @@ function GraphLine({
           ]}
         />
       )}
-      <View
+      <Animated.View
         style={[
           styles.graphLine,
           {
             backgroundColor: color,
             height: thickness,
             left: (from.x + to.x) / 2 - length / 2,
-            opacity,
+            opacity: lineOpacity,
             top: (from.y + to.y) / 2 - thickness / 2,
             transform: [{ rotateZ: `${angle}rad` }],
             width: length,
@@ -1033,170 +1112,73 @@ function GraphLine({
   );
 }
 
-function StoryDot({
+const STORY_DOT_RADIUS = 3.4;
+
+const StoryDot = React.memo(function StoryDot({
   active,
   camera,
-  dimmed,
+  fadeOpacity,
   layout,
   story,
 }: {
   active: boolean;
   camera: Camera;
-  dimmed: boolean;
+  fadeOpacity: Animated.AnimatedInterpolation<number>;
   layout: Layout;
   story: StoryNode;
 }) {
   const point = pointFor(camera, layout, story);
-  const progress = useGlowProgress(active);
-  const idleRadius = clamp(story.radius * camera.scale * 1.1, 1.25, 8.5);
-  const activeRadius = clamp(story.radius * camera.scale * 1.42, 3.2, 14);
-  const scale = progress.interpolate({
-    inputRange: [0, 1],
-    outputRange: [idleRadius / activeRadius, 1],
-  });
-  const glowOpacity = progress.interpolate({
-    inputRange: [0, 1],
-    outputRange: [0, dimmed ? 0.08 : 0.2],
-  });
-  const dotOpacity = progress.interpolate({
-    inputRange: [0, 1],
-    outputRange: [dimmed ? 0.14 : 0.76, dimmed ? 0.24 : 1],
-  });
-  const backgroundColor = progress.interpolate({
-    inputRange: [0, 1],
-    outputRange: [IDLE_STORY, APPLE_ORANGE],
-  });
 
-  if (point.x < -24 || point.x > layout.width + 24 || point.y < -24 || point.y > layout.height + 24) {
+  if (
+    point.x < -16 ||
+    point.x > layout.width + 16 ||
+    point.y < -16 ||
+    point.y > layout.height + 16
+  ) {
     return null;
   }
 
   return (
-    <View
+    <Animated.View
+      pointerEvents="none"
       style={[
-        styles.nodeAnchor,
+        styles.storyDot,
         {
-          height: activeRadius * 2,
-          left: point.x - activeRadius,
-          top: point.y - activeRadius,
-          width: activeRadius * 2,
+          backgroundColor: active ? APPLE_ORANGE : IDLE_STORY,
+          height: STORY_DOT_RADIUS * 2,
+          left: point.x - STORY_DOT_RADIUS,
+          opacity: fadeOpacity,
+          top: point.y - STORY_DOT_RADIUS,
+          width: STORY_DOT_RADIUS * 2,
         },
-      ]}>
-      <Animated.View
-        style={[
-          styles.nodeGlow,
-          {
-            opacity: glowOpacity,
-            transform: [{ scale: progress.interpolate({ inputRange: [0, 1], outputRange: [0.7, 1.55] }) }],
-          },
-        ]}
-      />
-      <Animated.View
-        style={[
-          styles.storyDot,
-          styles.animatedNodeDot,
-          {
-            backgroundColor,
-            opacity: dotOpacity,
-            transform: [{ scale }],
-          },
-        ]}
-      />
-    </View>
+      ]}
+    />
   );
-}
-
-function SubtopicDot({
-  active,
-  camera,
-  layout,
-  subtopic,
-}: {
-  active: boolean;
-  camera: Camera;
-  layout: Layout;
-  subtopic: SubtopicNode;
-}) {
-  const point = pointFor(camera, layout, subtopic);
-  const progress = useGlowProgress(active);
-  const idleRadius = clamp(subtopic.radius * camera.scale * 1.25, 4, 14);
-  const activeRadius = clamp(subtopic.radius * camera.scale * 1.5, 6, 16);
-  const scale = progress.interpolate({
-    inputRange: [0, 1],
-    outputRange: [idleRadius / activeRadius, 1],
-  });
-  const backgroundColor = progress.interpolate({
-    inputRange: [0, 1],
-    outputRange: [IDLE_NODE, APPLE_ORANGE],
-  });
-  const borderColor = progress.interpolate({
-    inputRange: [0, 1],
-    outputRange: ['rgba(255, 244, 227, 0.42)', 'rgba(255, 244, 227, 0.8)'],
-  });
-  const opacity = progress.interpolate({
-    inputRange: [0, 1],
-    outputRange: [0.72, 1],
-  });
-  const glowOpacity = progress.interpolate({
-    inputRange: [0, 1],
-    outputRange: [0, 0.18],
-  });
-
-  return (
-    <View
-      style={[
-        styles.nodeAnchor,
-        {
-          height: activeRadius * 2,
-          left: point.x - activeRadius,
-          top: point.y - activeRadius,
-          width: activeRadius * 2,
-        },
-      ]}>
-      <Animated.View
-        style={[
-          styles.nodeGlow,
-          {
-            opacity: glowOpacity,
-            transform: [{ scale: progress.interpolate({ inputRange: [0, 1], outputRange: [0.72, 1.45] }) }],
-          },
-        ]}
-      />
-      <Animated.View
-        style={[
-          styles.subtopicDot,
-          styles.animatedNodeDot,
-          {
-            backgroundColor,
-            borderColor,
-            opacity,
-            transform: [{ scale }],
-          },
-        ]}
-      />
-    </View>
-  );
-}
+});
 
 function TopicCluster({
   active,
   camera,
   dimmed,
   layout,
+  morphProgress,
+  recordMode,
   topic,
 }: {
   active: boolean;
   camera: Camera;
   dimmed: boolean;
   layout: Layout;
+  morphProgress: Animated.Value;
+  recordMode: boolean;
   topic: TopicNode;
 }) {
   const point = pointFor(camera, layout, topic);
   const ringRadius = clamp(topic.clusterRadius * camera.scale, 20, 190);
   const progress = useGlowProgress(active);
-  const idleRadius = clamp(topic.coreRadius * camera.scale, 5, 44);
-  const activeRadius = clamp(topic.coreRadius * camera.scale * 1.35, 12, 62);
-  const glowRadius = clamp(activeRadius * 2.45, 30, 118);
+  const idleRadius = clamp(3.4 + topic.coreRadius * camera.scale * 0.68, 5.4, 27);
+  const activeRadius = clamp(idleRadius * 1.18, 8.8, 38);
+  const glowRadius = clamp(activeRadius * 2.1, 24, 86);
   const scale = progress.interpolate({
     inputRange: [0, 1],
     outputRange: [idleRadius / activeRadius, 1],
@@ -1207,7 +1189,7 @@ function TopicCluster({
   });
   const glowOpacity = progress.interpolate({
     inputRange: [0, 1],
-    outputRange: [0, dimmed ? 0.05 : 0.2],
+    outputRange: [0, dimmed ? 0.04 : 0.16],
   });
 
   if (
@@ -1236,23 +1218,38 @@ function TopicCluster({
       />
       <Animated.View
         style={[
-          styles.topicCore,
+          styles.nodeAnchor,
+          morphNodeStyle({
+            endOpacity: active ? 0.22 : 0.1,
+            endScale: active ? 0.42 : 0.28,
+            layout,
+            morphProgress,
+            point,
+            startOpacity: dimmed ? 0.18 : 1,
+          }),
           {
-            backgroundColor,
             height: activeRadius * 2,
             left: point.x - activeRadius,
-            opacity: dimmed ? 0.18 : 1,
             top: point.y - activeRadius,
-            transform: [{ scale }],
             width: activeRadius * 2,
           },
         ]}
       >
-        {camera.scale > 1.85 && (
-          <Text style={[styles.topicCount, { color: active ? SPACE : 'rgba(3, 5, 12, 0.72)' }]}>
-            {topic.storyCount}
-          </Text>
-        )}
+        <Animated.View
+          style={[
+            styles.topicCore,
+            styles.fillNode,
+            {
+              backgroundColor,
+              transform: [{ scale }],
+            },
+          ]}>
+          {!recordMode && camera.scale > 2.05 && (
+            <Text style={[styles.topicCount, { color: active ? SPACE : 'rgba(3, 5, 12, 0.72)' }]}>
+              {topic.storyCount}
+            </Text>
+          )}
+        </Animated.View>
       </Animated.View>
     </>
   );
@@ -1262,17 +1259,19 @@ function TopicLabel({
   count,
   label,
   opacity,
+  width,
   x,
   y,
 }: {
   count: number;
   label: string;
   opacity: number;
+  width: number;
   x: number;
   y: number;
 }) {
   return (
-    <View style={[styles.topicLabel, { left: x - 70, opacity, top: y, width: 140 }]}>
+    <View style={[styles.topicLabel, { left: x - width / 2, opacity, top: y, width }]}>
       <Text numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.72} style={styles.topicLabelText}>
         {label}
       </Text>
@@ -1281,24 +1280,260 @@ function TopicLabel({
   );
 }
 
-function StoryLabel({
-  opacity,
-  title,
-  x,
-  y,
+function RecordNodeOverlay({
+  active,
+  layout,
+  morphProgress,
 }: {
-  opacity: number;
-  title: string;
-  x: number;
-  y: number;
+  active: boolean;
+  layout: Layout;
+  morphProgress: Animated.Value;
 }) {
+  const { status, toggle } = useRecording();
+  const pulse = useRef(new Animated.Value(0)).current;
+  const recording = status === 'recording';
+  const paused = status === 'paused';
+  const sent = status === 'sent';
+
+  useEffect(() => {
+    if (!active || !recording) {
+      pulse.stopAnimation();
+      pulse.setValue(0);
+      return;
+    }
+
+    const loop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(pulse, {
+          toValue: 1,
+          duration: 720,
+          easing: Easing.out(Easing.quad),
+          useNativeDriver: true,
+        }),
+        Animated.timing(pulse, {
+          toValue: 0,
+          duration: 180,
+          easing: Easing.inOut(Easing.quad),
+          useNativeDriver: true,
+        }),
+      ]),
+    );
+
+    loop.start();
+    return () => loop.stop();
+  }, [active, pulse, recording]);
+
+  if (!layout.width || !layout.height) {
+    return null;
+  }
+
+  const target = recordTarget(layout);
+  const size = 132;
+  const opacity = morphProgress.interpolate({
+    inputRange: [0, 0.32, 0.78, 1],
+    outputRange: [0, 0.42, 0.92, 1],
+  });
+  const scale = morphProgress.interpolate({
+    inputRange: [0, 0.4, 0.82, 1],
+    outputRange: [0.28, 0.58, 0.96, 1],
+  });
+  const ringScale = pulse.interpolate({
+    inputRange: [0, 1],
+    outputRange: [1, 1.42],
+  });
+  const ringOpacity = pulse.interpolate({
+    inputRange: [0, 1],
+    outputRange: [recording ? 0.36 : 0, 0],
+  });
+
   return (
-    <View style={[styles.storyLabel, { left: x - 72, opacity, top: y + 8, width: 144 }]}>
-      <Text numberOfLines={1} style={styles.storyLabelText}>
-        {title}
-      </Text>
+    <>
+      <StarStream active={active && recording} layout={layout} target={target} />
+      <Animated.View
+      pointerEvents={active ? 'box-none' : 'none'}
+      style={[
+        styles.recordNodeWrap,
+        {
+          left: target.x - size / 2,
+          opacity,
+          top: target.y - size / 2,
+          transform: [{ scale }],
+        },
+      ]}>
+      <Animated.View
+        pointerEvents="none"
+        style={[
+          styles.recordPulseRing,
+          {
+            opacity: ringOpacity,
+            transform: [{ scale: ringScale }],
+          },
+        ]}
+      />
+      <Pressable
+        accessibilityLabel={recording ? 'Pause recording' : paused ? 'Resume recording' : 'Start recording'}
+        onPress={toggle}
+        style={({ pressed }) => [
+          styles.recordNodeButton,
+          (recording || paused || sent) && styles.recordNodeButtonActive,
+          pressed && styles.pressed,
+        ]}>
+        <SymbolIcon
+          android={sent ? 'check' : paused ? 'play_arrow' : recording ? 'pause' : 'mic'}
+          ios={sent ? 'checkmark' : paused ? 'play.fill' : recording ? 'pause.fill' : 'mic.fill'}
+          web={sent ? 'check' : paused ? 'play_arrow' : recording ? 'pause' : 'mic'}
+          size={42}
+          color={SPACE}
+        />
+        <View style={styles.recordWave}>
+          {Array.from({ length: 7 }, (_, index) => (
+            <Animated.View
+              key={index}
+              style={[
+                styles.recordWaveBar,
+                {
+                  height: recording ? 10 + Math.abs(Math.sin(index * 0.92)) * 22 : 6 + (index % 3) * 2,
+                  opacity: recording ? 0.86 : 0.38,
+                  transform: [
+                    {
+                      scaleY: recording
+                        ? pulse.interpolate({
+                            inputRange: [0, 1],
+                            outputRange: [0.72 + index * 0.03, 1.2 - index * 0.025],
+                          })
+                        : 1,
+                    },
+                  ],
+                },
+              ]}
+            />
+          ))}
+        </View>
+      </Pressable>
+      </Animated.View>
+    </>
+  );
+}
+
+function StarStream({
+  active,
+  layout,
+  target,
+}: {
+  active: boolean;
+  layout: Layout;
+  target: { x: number; y: number };
+}) {
+  if (!active || !layout.width) {
+    return null;
+  }
+
+  return (
+    <View pointerEvents="none" style={StyleSheet.absoluteFill}>
+      {Array.from({ length: 8 }, (_, index) => (
+        <StarParticle key={index} index={index} layout={layout} target={target} />
+      ))}
     </View>
   );
+}
+
+function StarParticle({
+  index,
+  layout,
+  target,
+}: {
+  index: number;
+  layout: Layout;
+  target: { x: number; y: number };
+}) {
+  const progress = useRef(new Animated.Value(0)).current;
+  const [seed, setSeed] = useState(() => makeStarSeed(index, layout, target));
+
+  useEffect(() => {
+    let mounted = true;
+    let timeout: ReturnType<typeof setTimeout> | null = null;
+
+    const fire = () => {
+      if (!mounted) {
+        return;
+      }
+
+      setSeed(makeStarSeed(index, layout, target));
+      progress.setValue(0);
+      Animated.timing(progress, {
+        toValue: 1,
+        duration: 1500 + Math.random() * 900,
+        easing: Easing.in(Easing.cubic),
+        useNativeDriver: true,
+      }).start(({ finished }) => {
+        if (finished && mounted) {
+          timeout = setTimeout(fire, 80 + Math.random() * 320);
+        }
+      });
+    };
+
+    timeout = setTimeout(fire, index * 220);
+
+    return () => {
+      mounted = false;
+      if (timeout) {
+        clearTimeout(timeout);
+      }
+      progress.stopAnimation();
+    };
+  }, [index, layout.height, layout.width, progress, target.x, target.y]);
+
+  const translateX = progress.interpolate({
+    inputRange: [0, 1],
+    outputRange: [seed.dx, 0],
+  });
+  const translateY = progress.interpolate({
+    inputRange: [0, 1],
+    outputRange: [seed.dy, 0],
+  });
+  const opacity = progress.interpolate({
+    inputRange: [0, 0.14, 0.74, 1],
+    outputRange: [0, 1, 1, 0],
+  });
+  const scale = progress.interpolate({
+    inputRange: [0, 0.55, 1],
+    outputRange: [0.7, 1.05, 0.2],
+  });
+
+  return (
+    <Animated.View
+      pointerEvents="none"
+      style={[
+        styles.starParticle,
+        {
+          height: seed.size,
+          left: target.x - seed.size / 2,
+          top: target.y - seed.size / 2,
+          opacity,
+          transform: [{ translateX }, { translateY }, { scale }],
+          width: seed.size,
+        },
+      ]}
+    />
+  );
+}
+
+function makeStarSeed(
+  index: number,
+  layout: Layout,
+  target: { x: number; y: number },
+) {
+  const angle = Math.random() * Math.PI * 2;
+  const span = Math.max(layout.width, layout.height);
+  const distance = span * (0.4 + Math.random() * 0.32);
+  const startX = target.x + Math.cos(angle) * distance;
+  const startY = target.y + Math.sin(angle) * distance;
+
+  return {
+    dx: startX - target.x,
+    dy: startY - target.y,
+    size: 2.4 + Math.random() * 2.6,
+  };
 }
 
 function NodeSheet({
@@ -1316,36 +1551,26 @@ function NodeSheet({
   onTopicPress: (topic: TopicNode) => void;
   selected: SelectedNode;
 }) {
-  const title = selected.kind === 'story' ? selected.node.title : selected.node.label;
-  const topic =
-    selected.kind === 'topic'
-      ? selected.node
-      : universeData.topicById[selected.kind === 'story' ? selected.node.topic : selected.node.topic];
-  const stories =
-    selected.kind === 'story'
-      ? [selected.node]
-      : universeData.stories.filter((story) => story.topics.includes(topic.id)).slice(0, 4);
+  const topic = selected.node;
+  const stories = universeData.stories.filter((story) => story.topic === topic.id);
   const relatedTopics = universeData.topicEdges
     .filter(([a, b]) => a === topic.id || b === topic.id)
     .map(([a, b]) => universeData.topicById[a === topic.id ? b : a])
     .filter(Boolean)
     .slice(0, 8);
-  const maxHeight = Math.max(300, (layout.height - bottomInset) * 0.5);
+  const maxHeight = Math.max(320, (layout.height - bottomInset) * 0.58);
 
   return (
     <View style={[styles.sheet, { bottom: bottomInset, maxHeight }]}>
       <View style={styles.sheetHandle} />
       <View style={styles.sheetHeader}>
         <View style={styles.sheetBadge}>
-          <Text style={styles.sheetBadgeText}>{selected.kind === 'story' ? '1' : topic.storyCount}</Text>
+          <Text style={styles.sheetBadgeText}>{topic.storyCount}</Text>
         </View>
         <View style={styles.sheetTitleWrap}>
-          <Text style={styles.sheetKicker}>
-            {selected.kind === 'topic' ? 'Topic' : selected.kind === 'story' ? 'Story' : 'Subtopic'} /{' '}
-            {categoryLabel(topic.category)}
-          </Text>
+          <Text style={styles.sheetKicker}>Topic / {categoryLabel(topic.category)}</Text>
           <Text numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.82} style={styles.sheetTitle}>
-            {title}
+            {topic.label}
           </Text>
           <Text style={styles.sheetMeta}>
             {topic.storyCount} stories / {Math.round(topic.storyCount * 0.7)} min remembered
@@ -1373,37 +1598,29 @@ function NodeSheet({
           </>
         )}
 
-        <SectionLabel>{selected.kind === 'story' ? 'Transcript / 2:14' : 'Recent stories'}</SectionLabel>
-        {selected.kind === 'story' ? (
-          <>
-            <Text style={styles.transcript}>
-              We took a wrong turn and ended up somewhere quieter than the map promised. The whole
-              memory bends around that pause before the singer started again.
-            </Text>
-            <Waveform />
-          </>
-        ) : (
-          <View style={styles.storyList}>
-            {stories.map((story) => (
-              <View key={story.id} style={styles.storyCard}>
-                <View style={styles.storyCardMetaRow}>
-                  <View style={styles.playDot}>
-                    <SymbolIcon android="play_arrow" ios="play.fill" web="play_arrow" size={8} color={APPLE_ORANGE} />
-                  </View>
-                  <Text style={styles.storyCardMeta}>
-                    {story.date} / {story.duration}
-                  </Text>
+        <SectionLabel>Recordings</SectionLabel>
+        <View style={styles.storyList}>
+          {stories.map((story) => (
+            <View
+              key={story.id}
+              style={styles.storyCard}>
+              <View style={styles.storyCardMetaRow}>
+                <View style={styles.playDot}>
+                  <SymbolIcon android="play_arrow" ios="play.fill" web="play_arrow" size={8} color={APPLE_ORANGE} />
                 </View>
-                <Text numberOfLines={1} style={styles.storyCardTitle}>
-                  {story.title}
-                </Text>
-                <Text numberOfLines={2} style={styles.storyCardSnippet}>
-                  {story.snippet}
+                <Text style={styles.storyCardMeta}>
+                  {story.date} / {story.duration}
                 </Text>
               </View>
-            ))}
-          </View>
-        )}
+              <Text numberOfLines={1} style={styles.storyCardTitle}>
+                {story.title}
+              </Text>
+              <Text numberOfLines={2} style={styles.storyCardSnippet}>
+                {story.snippet}
+              </Text>
+            </View>
+          ))}
+        </View>
       </ScrollView>
 
       <View style={styles.sheetActions}>
@@ -1425,13 +1642,8 @@ function ActionMenu({
   onClose: () => void;
   selected: SelectedNode;
 }) {
-  const count =
-    selected.kind === 'topic'
-      ? selected.node.storyCount
-      : selected.kind === 'story'
-        ? 1
-        : universeData.topicById[selected.node.topic]?.storyCount ?? 1;
-  const title = selected.kind === 'story' ? selected.node.title : selected.node.label;
+  const count = selected.node.storyCount;
+  const title = selected.node.label;
   const actions: GenerationAction[] = [
     { icon: ['book', 'book.closed.fill', 'book'], label: 'Book chapter', sub: 'Long-form prose', pick: true },
     { icon: ['graphic_eq', 'waveform', 'graphic_eq'], label: 'Podcast episode', sub: 'Narrated in your voice', pick: false },
@@ -1645,6 +1857,9 @@ const styles = StyleSheet.create({
     flex: 1,
     overflow: 'hidden',
   },
+  fillNode: {
+    ...StyleSheet.absoluteFillObject,
+  },
   generateButton: {
     alignItems: 'center',
     backgroundColor: APPLE_ORANGE,
@@ -1763,20 +1978,60 @@ const styles = StyleSheet.create({
   pressed: {
     opacity: 0.72,
   },
-  recordButton: {
+  recordNodeButton: {
     alignItems: 'center',
     backgroundColor: APPLE_ORANGE,
     borderRadius: 999,
-    elevation: 9,
-    height: 60,
+    elevation: 12,
+    gap: 12,
+    height: 132,
     justifyContent: 'center',
-    position: 'absolute',
-    right: 18,
     shadowColor: APPLE_ORANGE_DEEP,
-    shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 0.42,
-    shadowRadius: 20,
-    width: 60,
+    shadowOffset: { width: 0, height: 16 },
+    shadowOpacity: 0.46,
+    shadowRadius: 30,
+    width: 132,
+  },
+  recordNodeButtonActive: {
+    backgroundColor: '#ff7f4d',
+  },
+  recordNodeWrap: {
+    alignItems: 'center',
+    height: 132,
+    justifyContent: 'center',
+    shadowColor: APPLE_ORANGE_DEEP,
+    shadowOffset: { width: 0, height: 12 },
+    shadowOpacity: 0.34,
+    shadowRadius: 36,
+    position: 'absolute',
+    width: 132,
+  },
+  recordPulseRing: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(255, 150, 92, 0.28)',
+    borderColor: 'rgba(255, 244, 227, 0.18)',
+    borderRadius: 999,
+    borderWidth: 1,
+  },
+  recordWave: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: 3,
+    height: 28,
+  },
+  recordWaveBar: {
+    backgroundColor: 'rgba(3, 5, 12, 0.76)',
+    borderRadius: 999,
+    width: 4,
+  },
+  starParticle: {
+    backgroundColor: '#fff4e3',
+    borderRadius: 999,
+    position: 'absolute',
+    shadowColor: APPLE_ORANGE,
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0.95,
+    shadowRadius: 8,
   },
   relatedDot: {
     backgroundColor: IDLE_NODE,
@@ -1984,6 +2239,10 @@ const styles = StyleSheet.create({
     gap: 8,
     marginBottom: 6,
   },
+  storyCardPressed: {
+    backgroundColor: 'rgba(255, 150, 92, 0.13)',
+    borderColor: 'rgba(255, 150, 92, 0.3)',
+  },
   storyCardSnippet: {
     color: 'rgba(255, 244, 227, 0.62)',
     fontFamily: bodyFont,
@@ -2001,20 +2260,6 @@ const styles = StyleSheet.create({
   storyDot: {
     borderRadius: 999,
     position: 'absolute',
-  },
-  storyLabel: {
-    alignItems: 'center',
-    backgroundColor: 'rgba(8, 12, 23, 0.62)',
-    borderRadius: 999,
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    position: 'absolute',
-  },
-  storyLabelText: {
-    color: 'rgba(255, 244, 227, 0.86)',
-    fontFamily: bodyFont,
-    fontSize: 11,
-    fontWeight: '800',
   },
   storyList: {
     gap: 8,
@@ -2054,20 +2299,21 @@ const styles = StyleSheet.create({
   topicLabelMeta: {
     color: 'rgba(255, 244, 227, 0.5)',
     fontFamily: monoFont,
-    fontSize: 9,
+    fontSize: 8,
     fontWeight: '700',
-    marginTop: 2,
+    marginTop: 1,
     textTransform: 'uppercase',
   },
   topicLabelText: {
     color: '#ffffff',
     fontFamily: displayFont,
-    fontSize: 16,
+    fontSize: 15,
     fontWeight: '900',
+    lineHeight: 18,
     textAlign: 'center',
     textShadowColor: 'rgba(0, 0, 0, 0.72)',
     textShadowOffset: { width: 0, height: 1 },
-    textShadowRadius: 8,
+    textShadowRadius: 7,
   },
   transcript: {
     backgroundColor: PANEL_SOFT,

@@ -228,13 +228,13 @@ function pick<T>(items: T[]) {
 }
 
 function visibleStoryCount(storyCount: number) {
-  return storyCount;
+  return Math.max(2, Math.min(5, Math.round(Math.sqrt(storyCount) * 0.62)));
 }
 
 function estimateClusterRadius(storyCount: number, coreRadius: number) {
-  const angularSpacing = 4.05;
-  const ringGap = 4.35;
-  const startRadius = coreRadius + 6.8;
+  const angularSpacing = 4.15;
+  const ringGap = 4.15;
+  const startRadius = coreRadius + 7.2;
   let placed = 0;
   let ring = 0;
   let radius = startRadius;
@@ -245,14 +245,22 @@ function estimateClusterRadius(storyCount: number, coreRadius: number) {
     ring += 1;
   }
 
-  return radius + 6.8;
+  return radius + 7.4;
 }
 
 function buildTopics(): TopicNode[] {
+  const categoryCenters: Record<UniverseCategory, { x: number; y: number }> = {
+    person: { x: -118, y: -34 },
+    place: { x: 72, y: -42 },
+    feeling: { x: 78, y: 96 },
+    era: { x: -58, y: 108 },
+    event: { x: 164, y: 28 },
+  };
+
   const topics = topicSeeds
     .map((topic) => {
       const visibleStories = visibleStoryCount(topic.storyCount);
-      const coreRadius = 3.6 + Math.sqrt(topic.storyCount) * 0.56;
+      const coreRadius = 3.4 + Math.sqrt(topic.storyCount) * 0.92;
 
       return {
         ...topic,
@@ -265,25 +273,16 @@ function buildTopics(): TopicNode[] {
     .sort((a, b) => b.storyCount - a.storyCount);
 
   topics.forEach((topic, index) => {
-    const angle = index * 2.39996 - 0.45;
+    const center = categoryCenters[topic.category];
+    const angle = index * 2.39996 + random() * 0.44;
+    const rank = index / Math.max(1, topics.length - 1);
+    const orbit = topic.category === 'event' ? 44 + random() * 72 : 28 + Math.sqrt(rank) * 98 + random() * 24;
 
-    if (index < 14) {
-      const ring = Math.sqrt((index + 0.35) / 14);
-      const radius = 24 + ring * 155;
-      topic.x = Math.cos(angle) * radius;
-      topic.y = Math.sin(angle) * radius * 0.9;
-      return;
-    }
-
-    const outerIndex = index - 14;
-    const outerCount = topics.length - 14;
-    const orbitAngle = (outerIndex / outerCount) * Math.PI * 2 - Math.PI * 0.58;
-    const radius = 222 + (outerIndex % 2) * 26 + (random() - 0.5) * 12;
-    topic.x = Math.cos(orbitAngle) * radius;
-    topic.y = Math.sin(orbitAngle) * radius * 0.84;
+    topic.x = center.x + Math.cos(angle) * orbit;
+    topic.y = center.y + Math.sin(angle) * orbit * 0.82;
   });
 
-  for (let iteration = 0; iteration < 430; iteration += 1) {
+  for (let iteration = 0; iteration < 520; iteration += 1) {
     for (let i = 0; i < topics.length; i += 1) {
       for (let j = i + 1; j < topics.length; j += 1) {
         const a = topics[i];
@@ -291,10 +290,11 @@ function buildTopics(): TopicNode[] {
         const dx = b.x - a.x;
         const dy = b.y - a.y;
         const distance = Math.sqrt(dx * dx + dy * dy) || 0.01;
-        const minimumDistance = (a.clusterRadius + b.clusterRadius) * 0.7;
+        const sameCategory = a.category === b.category;
+        const minimumDistance = (a.clusterRadius + b.clusterRadius) * (sameCategory ? 0.57 : 0.66) + 14;
 
         if (distance < minimumDistance) {
-          const push = (minimumDistance - distance) * 0.48;
+          const push = (minimumDistance - distance) * 0.38;
           const ux = dx / distance;
           const uy = dy / distance;
           a.x -= ux * push;
@@ -305,12 +305,41 @@ function buildTopics(): TopicNode[] {
       }
     }
 
-    topics.forEach((topic, index) => {
+    topicEdges.forEach(([fromId, toId]) => {
+      const a = topics.find((topic) => topic.id === fromId);
+      const b = topics.find((topic) => topic.id === toId);
+
+      if (!a || !b) {
+        return;
+      }
+
+      const dx = b.x - a.x;
+      const dy = b.y - a.y;
+      const distance = Math.sqrt(dx * dx + dy * dy) || 0.01;
+      const targetDistance = (a.clusterRadius + b.clusterRadius) * 0.68 + 26;
+      const pull = (distance - targetDistance) * 0.012;
+      const ux = dx / distance;
+      const uy = dy / distance;
+
+      a.x += ux * pull;
+      a.y += uy * pull;
+      b.x -= ux * pull;
+      b.y -= uy * pull;
+    });
+
+    topics.forEach((topic) => {
+      const categoryCenter = categoryCenters[topic.category];
+      topic.x += (categoryCenter.x - topic.x) * 0.008;
+      topic.y += (categoryCenter.y - topic.y) * 0.008;
+      topic.x *= 0.999;
+      topic.y *= 0.999;
+
       const distance = Math.sqrt(topic.x * topic.x + topic.y * topic.y) || 1;
-      const targetDistance = index < 14 ? 118 : 226 + ((index - 14) % 2) * 24;
-      const pull = index < 14 ? 0.007 : 0.011;
-      topic.x += (topic.x / distance) * (targetDistance - distance) * pull;
-      topic.y += (topic.y / distance) * (targetDistance - distance) * pull;
+
+      if (distance > 330) {
+        topic.x += (topic.x / distance) * (330 - distance) * 0.014;
+        topic.y += (topic.y / distance) * (330 - distance) * 0.014;
+      }
     });
   }
 
@@ -330,6 +359,11 @@ const topicById = Object.fromEntries(topics.map((topic) => [topic.id, topic])) a
   string,
   TopicNode
 >;
+const relatedTopicIds = topicEdges.reduce<Record<string, string[]>>((index, [fromId, toId]) => {
+  index[fromId] = [...(index[fromId] ?? []), toId];
+  index[toId] = [...(index[toId] ?? []), fromId];
+  return index;
+}, {});
 
 function buildSubtopics() {
   const subtopics: SubtopicNode[] = [];
@@ -343,7 +377,7 @@ function buildSubtopics() {
 
     labels.forEach((label, index) => {
       const angle = (index / labels.length) * Math.PI * 2 + random() * 0.5;
-      const radius = Math.min(topic.clusterRadius * 0.34, topic.coreRadius + 15);
+      const radius = Math.min(topic.clusterRadius * 0.38, topic.coreRadius + 14);
 
       subtopics.push({
         id: `${topicId}-sub-${index}`,
@@ -366,25 +400,32 @@ function buildStories() {
 
   topics.forEach((topic) => {
     const visibleCount = visibleStoryCount(topic.storyCount);
-    const storyRadius = 1.05;
-    const angularSpacing = 4.05;
-    const ringGap = 4.35;
-    const startRadius = topic.coreRadius + 6.8;
+    const storyRadius = 0.82;
+    const angularSpacing = 3.85;
+    const ringGap = 3.9;
+    const startRadius = topic.coreRadius + 7;
     let placed = 0;
     let ring = 0;
+    const relatedOptions = [
+      ...(relatedTopicIds[topic.id] ?? []),
+      ...topics
+        .filter((candidate) => candidate.category === topic.category && candidate.id !== topic.id)
+        .map((candidate) => candidate.id),
+    ]
+      .map((topicId) => topicById[topicId])
+      .filter(Boolean);
 
     while (placed < visibleCount) {
       const radius = startRadius + ring * ringGap;
       const capacity = Math.max(7, Math.floor((Math.PI * 2 * radius) / angularSpacing));
       const ringCount = Math.min(capacity, visibleCount - placed);
-      const angleOffset = ring * 0.38 + random() * 0.18;
+      const angleOffset = ring * 0.43 + random() * 0.24;
 
       for (let i = 0; i < ringCount; i += 1) {
         const angle = angleOffset + (i / ringCount) * Math.PI * 2;
-        const radialJitter = (random() - 0.5) * 0.32;
-        const finalRadius = Math.min(topic.clusterRadius - 3.6, radius + radialJitter);
+        const radialJitter = (random() - 0.5) * 0.92;
         const id = `story-${storyIndex}`;
-        const extraTopic = random() < 0.16 ? pick(topics.filter((candidate) => candidate.id !== topic.id)) : null;
+        const finalRadius = Math.min(topic.clusterRadius - 4.6, radius + radialJitter);
 
         stories.push({
           id,
@@ -393,11 +434,11 @@ function buildStories() {
           date: dates[storyIndex % dates.length],
           duration: `${1 + (storyIndex % 4)}:${String(12 + ((storyIndex * 13) % 48)).padStart(2, '0')}`,
           topic: topic.id,
-          topics: extraTopic ? [topic.id, extraTopic.id] : [topic.id],
+          topics: [topic.id],
           category: topic.category,
           x: topic.x + Math.cos(angle) * finalRadius,
           y: topic.y + Math.sin(angle) * finalRadius,
-          radius: storyRadius + random() * 0.18,
+          radius: storyRadius,
         });
 
         storyIndex += 1;
@@ -408,10 +449,10 @@ function buildStories() {
     }
   });
 
-  for (let iteration = 0; iteration < 116; iteration += 1) {
+  for (let iteration = 0; iteration < 130; iteration += 1) {
     stories.forEach((story) => {
       const topic = topicById[story.topic];
-      const pull = iteration < 18 ? 0.009 : 0;
+      const pull = story.topics.length > 1 ? 0.003 : iteration < 22 ? 0.008 : 0;
       story.x += (topic.x - story.x) * pull;
       story.y += (topic.y - story.y) * pull;
 
@@ -433,7 +474,7 @@ function buildStories() {
         const dx = b.x - a.x;
         const dy = b.y - a.y;
         const distance = Math.sqrt(dx * dx + dy * dy) || 0.01;
-        const minimumDistance = a.radius + b.radius + 1;
+        const minimumDistance = a.radius + b.radius + 0.95;
 
         if (distance < minimumDistance) {
           const push = (minimumDistance - distance) * 0.5;
@@ -452,7 +493,7 @@ function buildStories() {
 }
 
 function buildStars() {
-  return Array.from({ length: 170 }, (_, index): StarNode => ({
+  return Array.from({ length: 56 }, (_, index): StarNode => ({
     id: `star-${index}`,
     x: (random() - 0.5) * 2300,
     y: (random() - 0.5) * 2300,
@@ -463,7 +504,7 @@ function buildStars() {
 }
 
 const stories = buildStories();
-const subtopics = buildSubtopics();
+const subtopics: SubtopicNode[] = [];
 const stars = buildStars();
 const nebulae: NebulaNode[] = [
   { id: 'violet', x: -320, y: -240, radius: 460, color: '#7f6df2', opacity: 0.11, depth: 0.28 },

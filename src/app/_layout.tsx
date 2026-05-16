@@ -4,13 +4,16 @@ import { useColorScheme } from 'react-native';
 
 import { AnimatedSplashOverlay } from '@/components/animated-icon';
 import AppTabs from '@/components/app-tabs';
+import { RecordingProvider } from '@/features/recording/recording-state';
 
 export default function TabLayout() {
   const colorScheme = useColorScheme();
   return (
     <ThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>
-      <AnimatedSplashOverlay />
-      <AppTabs />
+      <RecordingProvider>
+        <AnimatedSplashOverlay />
+        <AppTabs />
+      </RecordingProvider>
     </ThemeProvider>
   );
 }

@@ -10,8 +10,10 @@
     "ios": {
       "icon": "./assets/expo.icon",
       "infoPlist": {
-        "NSMicrophoneUsageDescription": "This app records audio."
-      }
+        "NSMicrophoneUsageDescription": "Apple Pie records your voice memories so you can revisit them later."
+      },
+      "bundleIdentifier": "com.anonymous.applepie-ui",
+      "appleTeamId": "BUPJ739882"
     },
     "android": {
       "adaptiveIcon": {
@@ -37,7 +39,8 @@
             "imageWidth": 76
           }
         }
-      ]
+      ],
+      "expo-audio"
     ],
     "experiments": {
       "typedRoutes": true,
