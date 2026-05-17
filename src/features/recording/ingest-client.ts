@@ -1,0 +1,116 @@
+import * as Device from 'expo-device';
+import { fetch } from 'expo/fetch';
+import { File } from 'expo-file-system';
+import { Platform } from 'react-native';
+
+import { getIngestEndpoint, ingestApiKey } from '@/constants/ingest';
+
+export type IngestResult = {
+  audio_url?: string;
+  chunks: number;
+  input_id: string;
+  status: string;
+};
+
+export type RecordingUpload = {
+  createdAt: number;
+  durationSeconds: number;
+  uri: string;
+};
+
+export async function submitRecordingToIngest(recording: RecordingUpload): Promise<IngestResult> {
+  const endpoint = getIngestEndpoint();
+  const formData = new FormData();
+  const file = new File(recording.uri);
+
+  formData.append(
+    'metadata',
+    JSON.stringify({
+      input_id: `recording-${recording.createdAt}`,
+      timestamp: new Date(recording.createdAt).toISOString(),
+      user_id: getLocalUserId(),
+    }),
+  );
+  formData.append('audio', file, getRecordingFilename(recording));
+
+  const headers = ingestApiKey ? { 'x-api-key': ingestApiKey } : undefined;
+  const response = await fetch(endpoint, {
+    body: formData,
+    headers,
+    method: 'POST',
+  });
+
+  const payload = await readJson(response);
+  if (!response.ok) {
+    throw new Error(getErrorMessage(payload, response.status));
+  }
+
+  return {
+    audio_url: readOptionalString(payload?.audio_url),
+    chunks: readRequiredNumber(payload?.chunks, 'chunks'),
+    input_id: readRequiredString(payload?.input_id, 'input_id'),
+    status: readRequiredString(payload?.status, 'status'),
+  };
+}
+
+function getRecordingFilename(recording: RecordingUpload) {
+  const uriTail = recording.uri.split('/').pop()?.split('?')[0]?.trim();
+  if (uriTail) {
+    return decodeURIComponent(uriTail);
+  }
+
+  return `memory-${recording.createdAt}.m4a`;
+}
+
+function getLocalUserId() {
+  const rawValue = Device.deviceName || Device.modelName || Platform.OS;
+  const sanitized = rawValue.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+  return sanitized ? `local-${sanitized}` : `local-${Platform.OS}`;
+}
+
+async function readJson(response: Response): Promise<Record<string, unknown> | null> {
+  const text = await response.text();
+  if (!text.trim()) {
+    return null;
+  }
+
+  try {
+    const payload: unknown = JSON.parse(text);
+    return isRecord(payload) ? payload : null;
+  } catch {
+    return null;
+  }
+}
+
+function getErrorMessage(payload: Record<string, unknown> | null, statusCode: number) {
+  const detail = payload?.detail;
+  if (typeof detail === 'string' && detail.trim()) {
+    return detail.trim();
+  }
+
+  return `Upload failed (${statusCode})`;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+function readRequiredString(value: unknown, fieldName: string) {
+  if (typeof value === 'string' && value.trim()) {
+    return value;
+  }
+
+  throw new Error(`Ingest response missing ${fieldName}`);
+}
+
+function readRequiredNumber(value: unknown, fieldName: string) {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value;
+  }
+
+  throw new Error(`Ingest response missing ${fieldName}`);
+}
+
+function readOptionalString(value: unknown) {
+  return typeof value === 'string' && value.trim() ? value : undefined;
+}

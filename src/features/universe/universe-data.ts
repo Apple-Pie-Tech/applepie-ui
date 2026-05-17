@@ -138,19 +138,6 @@ const topicEdges: [string, string][] = [
   ['leo', 'twenties'],
 ];
 
-const subtopicSeeds: Record<string, string[]> = {
-  lisbon: ['Alfama', 'Belem', 'Bairro Alto', 'Cais do Sodre'],
-  brooklyn: ['Williamsburg', 'Bushwick', 'McCarren Park'],
-  paris: ['Le Marais', 'Montmartre'],
-  mom: ['Phone calls', 'Her kitchen', 'Worries'],
-  sam: ['Roadtrips', 'The fight', 'Late nights'],
-  childhood: ['School', 'Summers', 'Birthdays'],
-  twenties: ['Apartments', 'First jobs', 'Therapy'],
-  wonder: ['Skies', 'Strangers'],
-  joy: ['Mornings', 'Music', 'Cooking'],
-  pandemic: ['Bread', 'The zoom funeral'],
-};
-
 const storyTitles = [
   'The night we got lost',
   'A small kindness',
@@ -221,10 +208,6 @@ let seed = 42;
 function random() {
   seed = (seed * 9301 + 49297) % 233280;
   return seed / 233280;
-}
-
-function pick<T>(items: T[]) {
-  return items[Math.floor(random() * items.length)];
 }
 
 function visibleStoryCount(storyCount: number) {
@@ -359,40 +342,11 @@ const topicById = Object.fromEntries(topics.map((topic) => [topic.id, topic])) a
   string,
   TopicNode
 >;
-const relatedTopicIds = topicEdges.reduce<Record<string, string[]>>((index, [fromId, toId]) => {
+topicEdges.reduce<Record<string, string[]>>((index, [fromId, toId]) => {
   index[fromId] = [...(index[fromId] ?? []), toId];
   index[toId] = [...(index[toId] ?? []), fromId];
   return index;
 }, {});
-
-function buildSubtopics() {
-  const subtopics: SubtopicNode[] = [];
-
-  Object.entries(subtopicSeeds).forEach(([topicId, labels]) => {
-    const topic = topicById[topicId];
-
-    if (!topic) {
-      return;
-    }
-
-    labels.forEach((label, index) => {
-      const angle = (index / labels.length) * Math.PI * 2 + random() * 0.5;
-      const radius = Math.min(topic.clusterRadius * 0.38, topic.coreRadius + 14);
-
-      subtopics.push({
-        id: `${topicId}-sub-${index}`,
-        label,
-        topic: topicId,
-        category: topic.category,
-        x: topic.x + Math.cos(angle) * radius,
-        y: topic.y + Math.sin(angle) * radius,
-        radius: 3.5,
-      });
-    });
-  });
-
-  return subtopics;
-}
 
 function buildStories() {
   const stories: StoryNode[] = [];
@@ -406,15 +360,6 @@ function buildStories() {
     const startRadius = topic.coreRadius + 7;
     let placed = 0;
     let ring = 0;
-    const relatedOptions = [
-      ...(relatedTopicIds[topic.id] ?? []),
-      ...topics
-        .filter((candidate) => candidate.category === topic.category && candidate.id !== topic.id)
-        .map((candidate) => candidate.id),
-    ]
-      .map((topicId) => topicById[topicId])
-      .filter(Boolean);
-
     while (placed < visibleCount) {
       const radius = startRadius + ring * ringGap;
       const capacity = Math.max(7, Math.floor((Math.PI * 2 * radius) / angularSpacing));
@@ -538,3 +483,172 @@ export const universeData = {
   topicEdges,
   topics,
 };
+
+export type ProvisionUniversePoint = {
+  audio_url?: string;
+  id: string;
+  is_central: boolean;
+  is_synthetic: boolean;
+  label: string;
+};
+
+export type ProvisionUniverseEdge = {
+  source_id: string;
+  target_id: string;
+};
+
+export type ProvisionUniverseResponse = {
+  edges: ProvisionUniverseEdge[];
+  points: ProvisionUniversePoint[];
+};
+
+const categoryCenters: Record<UniverseCategory, { x: number; y: number }> = {
+  person: { x: -118, y: -34 },
+  place: { x: 72, y: -42 },
+  feeling: { x: 78, y: 96 },
+  era: { x: -58, y: 108 },
+  event: { x: 164, y: 28 },
+};
+
+const categoryOrder: UniverseCategory[] = ['person', 'place', 'feeling', 'era', 'event'];
+
+export function hydrateUniverseDataFromApi(response: ProvisionUniverseResponse) {
+  const next = buildProvisionedUniverseData(response);
+  Object.assign(universeData, next);
+}
+
+function buildProvisionedUniverseData(response: ProvisionUniverseResponse) {
+  const grouped = new Map<string, ProvisionUniversePoint[]>();
+  const pointTopicIds = new Map<string, string>();
+
+  response.points.forEach((point) => {
+    const group = grouped.get(point.label);
+    if (group) {
+      group.push(point);
+    } else {
+      grouped.set(point.label, [point]);
+    }
+  });
+
+  const labels = [...grouped.keys()].sort((a, b) => a.localeCompare(b));
+  const topics: TopicNode[] = labels.map((label, index) => {
+    const points = grouped.get(label) ?? [];
+    const category = pickProvisionCategory(label);
+    const center = categoryCenters[category];
+    const angle = (index / Math.max(labels.length, 1)) * Math.PI * 2;
+    const orbit = 72 + (index % 5) * 26;
+    const storyCount = points.length;
+    const coreRadius = 3.4 + Math.sqrt(Math.max(storyCount, 1)) * 0.92;
+    const id = `topic-${slugify(label) || index}`;
+    const topic = {
+      id,
+      label,
+      category,
+      storyCount,
+      x: center.x + Math.cos(angle) * orbit,
+      y: center.y + Math.sin(angle) * orbit * 0.82,
+      coreRadius,
+      clusterRadius: estimateClusterRadius(visibleStoryCount(storyCount), coreRadius),
+    } satisfies TopicNode;
+
+    points.forEach((point) => pointTopicIds.set(point.id, id));
+    return topic;
+  });
+
+  const topicById = Object.fromEntries(topics.map((topic) => [topic.id, topic])) as Record<string, TopicNode>;
+  const topicEdges = dedupeTopicEdges(response.edges, pointTopicIds);
+  const stories = buildProvisionedStories(grouped, topics);
+  const storyById = Object.fromEntries(stories.map((story) => [story.id, story])) as Record<string, StoryNode>;
+  const worldNodes = [...topics, ...stories];
+
+  return {
+    bounds: {
+      minX: Math.min(...worldNodes.map((node) => node.x), -120) - 70,
+      maxX: Math.max(...worldNodes.map((node) => node.x), 120) + 70,
+      minY: Math.min(...worldNodes.map((node) => node.y), -120) - 70,
+      maxY: Math.max(...worldNodes.map((node) => node.y), 120) + 70,
+    },
+    categories,
+    nebulae,
+    stars,
+    stories,
+    storyById,
+    subtopics: [] as SubtopicNode[],
+    topicById,
+    topicEdges,
+    topics,
+  };
+}
+
+function buildProvisionedStories(
+  grouped: Map<string, ProvisionUniversePoint[]>,
+  topics: TopicNode[],
+): StoryNode[] {
+  return topics.flatMap((topic) => {
+    const points = grouped.get(topic.label) ?? [];
+    const startRadius = topic.coreRadius + 7;
+    const ringGap = 3.9;
+
+    return points.map((point, index) => {
+      const angle = (index / Math.max(points.length, 1)) * Math.PI * 2;
+      const radius = Math.min(topic.clusterRadius - 4.6, startRadius + ringGap * Math.floor(index / 6));
+      return {
+        id: `story-${point.id}`,
+        title: point.is_central ? `${topic.label} center` : `Memory from ${topic.label}`,
+        snippet: point.audio_url
+          ? `Audio memory ready for ${topic.label}.`
+          : point.is_synthetic
+            ? `Synthetic anchor generated for ${topic.label}.`
+            : `Captured memory grouped under ${topic.label}.`,
+        date: point.is_central ? 'Cluster center' : point.is_synthetic ? 'Synthetic' : 'Captured',
+        duration: point.audio_url ? 'Audio' : point.is_synthetic ? 'Synthetic' : 'Text',
+        topic: topic.id,
+        topics: [topic.id],
+        category: topic.category,
+        x: topic.x + Math.cos(angle) * radius,
+        y: topic.y + Math.sin(angle) * radius,
+        radius: 0.82,
+      } satisfies StoryNode;
+    });
+  });
+}
+
+function dedupeTopicEdges(
+  edges: ProvisionUniverseEdge[],
+  pointTopicIds: Map<string, string>,
+): [string, string][] {
+  const seen = new Set<string>();
+  const topicEdges: [string, string][] = [];
+
+  edges.forEach((edge) => {
+    const sourceTopic = pointTopicIds.get(edge.source_id);
+    const targetTopic = pointTopicIds.get(edge.target_id);
+    if (!sourceTopic || !targetTopic || sourceTopic === targetTopic) {
+      return;
+    }
+
+    const [left, right] = sourceTopic < targetTopic ? [sourceTopic, targetTopic] : [targetTopic, sourceTopic];
+    const key = `${left}:${right}`;
+    if (seen.has(key)) {
+      return;
+    }
+
+    seen.add(key);
+    topicEdges.push([left, right]);
+  });
+
+  return topicEdges;
+}
+
+function pickProvisionCategory(label: string): UniverseCategory {
+  const hash = [...label].reduce((total, character) => total + character.charCodeAt(0), 0);
+  return categoryOrder[hash % categoryOrder.length];
+}
+
+function slugify(value: string) {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+}

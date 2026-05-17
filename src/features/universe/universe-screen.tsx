@@ -18,8 +18,15 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { BottomTabInset } from '@/constants/theme';
 import { useRecording } from '@/features/recording/recording-state';
+import {
+  createPodcast,
+  fetchPodcastDetail,
+  fetchUniverse,
+  ProvisionPodcastDetail,
+} from '@/features/universe/provision-client';
 
 import {
+  hydrateUniverseDataFromApi,
   StoryNode,
   TopicNode,
   universeData,
@@ -41,6 +48,7 @@ type SelectedNode = { kind: 'topic'; id: string; node: TopicNode };
 
 type GenerationAction = {
   icon: [AndroidSymbol, SFSymbol, AndroidSymbol];
+  kind: 'placeholder' | 'podcast';
   label: string;
   sub: string;
   pick: boolean;
@@ -292,6 +300,7 @@ export function UniverseScreen({ mode = 'universe' }: { mode?: UniverseMode } = 
   const insets = useSafeAreaInsets();
   const navigationInset = (Platform.OS === 'web' ? 84 : BottomTabInset) + insets.bottom;
   const isRecordMode = mode === 'record';
+  const [dataVersion, setDataVersion] = useState(0);
   const [layout, setLayout] = useState<Layout>({ width: 0, height: 0 });
   const [camera, setCamera] = useState<Camera>({ x: 0, y: 0, scale: INITIAL_SCALE });
   const [selected, setSelected] = useState<SelectedNode | null>(null);
@@ -299,6 +308,11 @@ export function UniverseScreen({ mode = 'universe' }: { mode?: UniverseMode } = 
   const [searchOpen, setSearchOpen] = useState(false);
   const [query, setQuery] = useState('');
   const [showHint, setShowHint] = useState(true);
+  const [provisionState, setProvisionState] = useState<'loading' | 'ready' | 'error'>('loading');
+  const [provisionError, setProvisionError] = useState<string | null>(null);
+  const [podcastJobsByLabel, setPodcastJobsByLabel] = useState<Record<string, ProvisionPodcastDetail>>({});
+  const [podcastErrorsByLabel, setPodcastErrorsByLabel] = useState<Record<string, string>>({});
+  const [podcastPendingLabel, setPodcastPendingLabel] = useState<string | null>(null);
   const cameraRef = useRef(camera);
   const cameraFrameRef = useRef<number | null>(null);
   const layoutRef = useRef(layout);
@@ -385,7 +399,130 @@ export function UniverseScreen({ mode = 'universe' }: { mode?: UniverseMode } = 
     setShowHint(false);
   }, [isRecordMode]);
 
+  const loadUniverse = useCallback(async () => {
+    setProvisionState('loading');
+    setProvisionError(null);
+
+    try {
+      const response = await fetchUniverse();
+      hydrateUniverseDataFromApi(response);
+      setDataVersion((current) => current + 1);
+      setProvisionState('ready');
+      setSelected(null);
+      setMenuOpen(false);
+
+      if (layoutRef.current.width && layoutRef.current.height) {
+        setCameraState(initialCamera(layoutRef.current));
+      }
+    } catch (error) {
+      setProvisionState('error');
+      setProvisionError(
+        error instanceof Error
+          ? `${error.message}. Showing preview map.`
+          : 'Live universe unavailable. Showing preview map.',
+      );
+    }
+  }, [setCameraState]);
+
+  useEffect(() => {
+    void loadUniverse();
+  }, [loadUniverse]);
+
+  useEffect(() => {
+    const activeJobs = Object.values(podcastJobsByLabel).filter(
+      (job) => job.status === 'pending' || job.status === 'running',
+    );
+
+    if (activeJobs.length === 0) {
+      return;
+    }
+
+    let cancelled = false;
+
+    const refresh = async () => {
+      const results = await Promise.all(
+        activeJobs.map(async (job) => {
+          try {
+            return await fetchPodcastDetail(job.id);
+          } catch (error) {
+            if (!cancelled) {
+              setPodcastErrorsByLabel((current) => ({
+                ...current,
+                [job.label]: error instanceof Error ? error.message : 'Podcast refresh failed',
+              }));
+            }
+
+            return null;
+          }
+        }),
+      );
+
+      if (cancelled) {
+        return;
+      }
+
+      setPodcastJobsByLabel((current) => {
+        const next = { ...current };
+        results.forEach((job) => {
+          if (job) {
+            next[job.label] = job;
+          }
+        });
+        return next;
+      });
+    };
+
+    void refresh();
+    const interval = setInterval(() => {
+      void refresh();
+    }, 3000);
+
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [podcastJobsByLabel]);
+
+  const selectedLabel = selected?.node.label ?? null;
+  const selectedPodcastJob = selectedLabel ? podcastJobsByLabel[selectedLabel] ?? null : null;
+  const selectedPodcastError = selectedLabel ? podcastErrorsByLabel[selectedLabel] ?? null : null;
+  const selectedPodcastPending = Boolean(
+    selectedLabel &&
+      (podcastPendingLabel === selectedLabel ||
+        selectedPodcastJob?.status === 'pending' ||
+        selectedPodcastJob?.status === 'running'),
+  );
+
+  const handlePodcastGenerate = useCallback(async () => {
+    if (!selectedLabel) {
+      return;
+    }
+
+    setPodcastPendingLabel(selectedLabel);
+    setPodcastErrorsByLabel((current) => {
+      const next = { ...current };
+      delete next[selectedLabel];
+      return next;
+    });
+
+    try {
+      const detail = await createPodcast(selectedLabel);
+      setPodcastJobsByLabel((current) => ({
+        ...current,
+        [detail.label]: detail,
+      }));
+    } catch (error) {
+      setPodcastErrorsByLabel((current) => ({
+        ...current,
+        [selectedLabel]: error instanceof Error ? error.message : 'Podcast creation failed',
+      }));
+    } finally {
+      setPodcastPendingLabel((current) => (current === selectedLabel ? null : current));
+    }
+  }, [selectedLabel]);
+
   const activeTopics = useMemo(() => {
+    void dataVersion;
     const ids = new Set<string>();
 
     if (!selected) {
@@ -403,7 +540,7 @@ export function UniverseScreen({ mode = 'universe' }: { mode?: UniverseMode } = 
       }
     });
     return ids;
-  }, [selected]);
+  }, [dataVersion, selected]);
 
   const activeStories = useMemo(() => {
     const ids = new Set<string>();
@@ -422,6 +559,7 @@ export function UniverseScreen({ mode = 'universe' }: { mode?: UniverseMode } = 
   }, [selected]);
 
   const insideTopic = useMemo<TopicNode | null>(() => {
+    void dataVersion;
     if (camera.scale < 1.08) {
       return null;
     }
@@ -441,7 +579,7 @@ export function UniverseScreen({ mode = 'universe' }: { mode?: UniverseMode } = 
     });
 
     return best;
-  }, [camera]);
+  }, [camera, dataVersion]);
 
   const animateCameraTo = useCallback(
     (target: Camera, duration = 620, motion: 'dive' | 'settle' = 'dive') => {
@@ -519,6 +657,7 @@ export function UniverseScreen({ mode = 'universe' }: { mode?: UniverseMode } = 
 
   const hitTest = useCallback(
     (x: number, y: number): SelectedNode | null => {
+      void dataVersion;
       const currentCamera = cameraRef.current;
       const currentLayout = layoutRef.current;
 
@@ -548,7 +687,7 @@ export function UniverseScreen({ mode = 'universe' }: { mode?: UniverseMode } = 
 
       return best;
     },
-    [queryValue],
+    [dataVersion, queryValue],
   );
 
   const openSelected = useCallback(
@@ -712,6 +851,7 @@ export function UniverseScreen({ mode = 'universe' }: { mode?: UniverseMode } = 
   );
 
   const topicLabels = useMemo(() => {
+    void dataVersion;
     if (isRecordMode || !layout.width || !layout.height) {
       return [];
     }
@@ -808,7 +948,7 @@ export function UniverseScreen({ mode = 'universe' }: { mode?: UniverseMode } = 
     });
 
     return labels;
-  }, [activeTopics, camera, isRecordMode, layout, queryValue]);
+  }, [activeTopics, camera, dataVersion, isRecordMode, layout, queryValue]);
 
   const hint = camera.scale < 1 ? 'Drag to swim through your life graph' : camera.scale < 2.6 ? 'Tap a glow to enter a topic' : 'Long-press a node to generate';
 
@@ -823,6 +963,7 @@ export function UniverseScreen({ mode = 'universe' }: { mode?: UniverseMode } = 
             activeStories={activeStories}
             activeTopics={activeTopics}
             camera={camera}
+            dataVersion={dataVersion}
             layout={layout}
             morphProgress={morphProgress}
             query={queryValue}
@@ -882,9 +1023,21 @@ export function UniverseScreen({ mode = 'universe' }: { mode?: UniverseMode } = 
         </View>
         )}
 
-        {showHint && !isRecordMode && !selected && !menuOpen && (
-          <View pointerEvents="none" style={[styles.hint, { bottom: navigationInset + 88 }]}>
+        {showHint && !isRecordMode && !selected && !menuOpen && !provisionError && provisionState !== 'loading' && (
+          <View pointerEvents="none" style={[styles.hint, { bottom: navigationInset + 88 }]}> 
             <Text style={styles.hintText}>{hint}</Text>
+          </View>
+        )}
+
+        {!isRecordMode && provisionState === 'loading' && (
+          <View pointerEvents="none" style={[styles.hint, { bottom: navigationInset + 88 }]}> 
+            <Text style={styles.hintText}>Loading live universe…</Text>
+          </View>
+        )}
+
+        {!isRecordMode && provisionError && (
+          <View pointerEvents="none" style={[styles.hint, styles.hintWarning, { bottom: navigationInset + 88 }]}> 
+            <Text style={styles.hintText}>{provisionError}</Text>
           </View>
         )}
 
@@ -910,7 +1063,15 @@ export function UniverseScreen({ mode = 'universe' }: { mode?: UniverseMode } = 
       )}
 
       {!isRecordMode && selected && menuOpen && (
-        <ActionMenu bottomInset={navigationInset} onClose={() => setMenuOpen(false)} selected={selected} />
+        <ActionMenu
+          bottomInset={navigationInset}
+          onClose={() => setMenuOpen(false)}
+          onPodcastGenerate={handlePodcastGenerate}
+          podcastError={selectedPodcastError}
+          podcastJob={selectedPodcastJob}
+          podcastPending={selectedPodcastPending}
+          selected={selected}
+        />
       )}
     </View>
   );
@@ -920,6 +1081,7 @@ function GraphLayer({
   activeStories,
   activeTopics,
   camera,
+  dataVersion,
   layout,
   morphProgress,
   query,
@@ -928,27 +1090,33 @@ function GraphLayer({
   activeStories: Set<string>;
   activeTopics: Set<string>;
   camera: Camera;
+  dataVersion: number;
   layout: Layout;
   morphProgress: Animated.Value;
   query: string;
   recordMode: boolean;
 }) {
+  void dataVersion;
   const viewport = useMemo(() => worldViewport(camera, layout, camera.scale < 0.82 ? 96 : 132), [camera, layout]);
   const visibleStories = useMemo(
-    () =>
-      universeData.stories.filter(
+    () => {
+      void dataVersion;
+      return universeData.stories.filter(
         (story) =>
           (query ? matchesStory(story, query) || activeStories.has(story.id) : true) &&
           isInWorldViewport(story, viewport, 20 / camera.scale),
-      ),
-    [activeStories, camera.scale, query, viewport],
+      );
+    },
+    [activeStories, camera.scale, dataVersion, query, viewport],
   );
   const visibleTopics = useMemo(
-    () =>
-      universeData.topics.filter((topic) =>
+    () => {
+      void dataVersion;
+      return universeData.topics.filter((topic) =>
         isInWorldViewport(topic, viewport, topic.clusterRadius + 36 / camera.scale),
-      ),
-    [camera.scale, viewport],
+      );
+    },
+    [camera.scale, dataVersion, viewport],
   );
 
   const storyFadeOpacity = morphProgress.interpolate({
@@ -1289,11 +1457,13 @@ function RecordNodeOverlay({
   layout: Layout;
   morphProgress: Animated.Value;
 }) {
-  const { status, toggle } = useRecording();
+  const { status, statusLabel, toggle } = useRecording();
   const pulse = useRef(new Animated.Value(0)).current;
   const recording = status === 'recording';
   const paused = status === 'paused';
+  const sending = status === 'sending';
   const sent = status === 'sent';
+  const hasError = status === 'error';
 
   useEffect(() => {
     if (!active || !recording) {
@@ -1371,17 +1541,29 @@ function RecordNodeOverlay({
         ]}
       />
       <Pressable
-        accessibilityLabel={recording ? 'Pause recording' : paused ? 'Resume recording' : 'Start recording'}
+        accessibilityLabel={
+          sending
+            ? 'Sending recording'
+            : recording
+              ? 'Pause recording'
+              : paused
+                ? 'Resume recording'
+                : hasError
+                  ? 'Start a new recording'
+                  : 'Start recording'
+        }
         onPress={toggle}
+        disabled={sending}
         style={({ pressed }) => [
           styles.recordNodeButton,
-          (recording || paused || sent) && styles.recordNodeButtonActive,
+          (recording || paused || sent || sending) && styles.recordNodeButtonActive,
+          hasError && styles.recordNodeButtonError,
           pressed && styles.pressed,
         ]}>
         <SymbolIcon
-          android={sent ? 'check' : paused ? 'play_arrow' : recording ? 'pause' : 'mic'}
-          ios={sent ? 'checkmark' : paused ? 'play.fill' : recording ? 'pause.fill' : 'mic.fill'}
-          web={sent ? 'check' : paused ? 'play_arrow' : recording ? 'pause' : 'mic'}
+          android={sent ? 'check' : paused ? 'play_arrow' : recording ? 'pause' : sending ? 'more_horiz' : 'mic'}
+          ios={sent ? 'checkmark' : paused ? 'play.fill' : recording ? 'pause.fill' : sending ? 'ellipsis' : 'mic.fill'}
+          web={sent ? 'check' : paused ? 'play_arrow' : recording ? 'pause' : sending ? 'more_horiz' : 'mic'}
           size={42}
           color={SPACE}
         />
@@ -1410,6 +1592,7 @@ function RecordNodeOverlay({
           ))}
         </View>
       </Pressable>
+      {statusLabel ? <Text style={[styles.recordNodeStatus, hasError && styles.recordNodeStatusError]}>{statusLabel}</Text> : null}
       </Animated.View>
     </>
   );
@@ -1636,21 +1819,42 @@ function NodeSheet({
 function ActionMenu({
   bottomInset,
   onClose,
+  onPodcastGenerate,
+  podcastError,
+  podcastJob,
+  podcastPending,
   selected,
 }: {
   bottomInset: number;
   onClose: () => void;
+  onPodcastGenerate: () => void;
+  podcastError: string | null;
+  podcastJob: ProvisionPodcastDetail | null;
+  podcastPending: boolean;
   selected: SelectedNode;
 }) {
   const count = selected.node.storyCount;
   const title = selected.node.label;
   const actions: GenerationAction[] = [
-    { icon: ['book', 'book.closed.fill', 'book'], label: 'Book chapter', sub: 'Long-form prose', pick: true },
-    { icon: ['graphic_eq', 'waveform', 'graphic_eq'], label: 'Podcast episode', sub: 'Narrated in your voice', pick: false },
-    { icon: ['videocam', 'video.fill', 'videocam'], label: 'Short film', sub: 'Voiceover and motion', pick: false },
-    { icon: ['auto_awesome', 'sparkles', 'auto_awesome'], label: 'Memory animation', sub: 'A moving scene loop', pick: false },
-    { icon: ['dashboard', 'square.grid.2x2.fill', 'dashboard'], label: 'Photo collage', sub: 'Visual scrapbook', pick: false },
+    { icon: ['book', 'book.closed.fill', 'book'], kind: 'placeholder', label: 'Book chapter', sub: 'Long-form prose', pick: true },
+    { icon: ['graphic_eq', 'waveform', 'graphic_eq'], kind: 'podcast', label: 'Podcast episode', sub: 'Narrated in your voice', pick: false },
+    { icon: ['videocam', 'video.fill', 'videocam'], kind: 'placeholder', label: 'Short film', sub: 'Voiceover and motion', pick: false },
+    { icon: ['auto_awesome', 'sparkles', 'auto_awesome'], kind: 'placeholder', label: 'Memory animation', sub: 'A moving scene loop', pick: false },
+    { icon: ['dashboard', 'square.grid.2x2.fill', 'dashboard'], kind: 'placeholder', label: 'Photo collage', sub: 'Visual scrapbook', pick: false },
   ];
+  const podcastSubtext = podcastError
+    ? podcastError
+    : podcastPending
+      ? 'Submitting your podcast job…'
+      : podcastJob?.status === 'completed'
+        ? 'Podcast ready to revisit'
+        : podcastJob?.status === 'failed'
+          ? podcastJob.error || 'Podcast generation failed'
+          : podcastJob?.status === 'running'
+            ? 'Generating your episode…'
+            : podcastJob?.status === 'pending'
+              ? 'Queued for generation'
+              : 'Narrated in your voice';
 
   return (
     <View style={styles.menuOverlay}>
@@ -1676,9 +1880,13 @@ function ActionMenu({
           {actions.map((action) => (
             <Pressable
               key={action.label}
+              disabled={action.kind !== 'podcast' || podcastPending}
+              onPress={action.kind === 'podcast' ? onPodcastGenerate : undefined}
               style={({ pressed }) => [
                 styles.actionRow,
+                action.kind !== 'podcast' && styles.actionRowDisabled,
                 action.pick && styles.actionRowSuggested,
+                podcastPending && action.kind === 'podcast' && styles.actionRowSuggested,
                 pressed && styles.pressed,
               ]}>
               <View style={[styles.actionIcon, action.pick && styles.actionIconSuggested]}>
@@ -1692,9 +1900,21 @@ function ActionMenu({
               </View>
               <View style={styles.actionTextWrap}>
                 <Text style={styles.actionTitle}>{action.label}</Text>
-                <Text style={styles.actionSub}>{action.sub}</Text>
+                <Text style={[styles.actionSub, action.kind === 'podcast' && podcastError && styles.actionSubError]}>
+                  {action.kind === 'podcast' ? podcastSubtext : action.sub}
+                </Text>
               </View>
-              {action.pick && (
+              {action.kind === 'podcast' && podcastJob?.status === 'completed' ? (
+                <View style={styles.pickPill}>
+                  <SymbolIcon android="check" ios="checkmark" web="check" size={8} color={APPLE_ORANGE} />
+                  <Text style={styles.pickText}>Ready</Text>
+                </View>
+              ) : action.kind === 'podcast' && (podcastPending || podcastJob?.status === 'pending' || podcastJob?.status === 'running') ? (
+                <View style={styles.pickPill}>
+                  <SymbolIcon android="graphic_eq" ios="waveform" web="graphic_eq" size={8} color={APPLE_ORANGE} />
+                  <Text style={styles.pickText}>Live</Text>
+                </View>
+              ) : action.pick && (
                 <View style={styles.pickPill}>
                   <SymbolIcon android="auto_awesome" ios="sparkles" web="auto_awesome" size={8} color={APPLE_ORANGE} />
                   <Text style={styles.pickText}>Pick</Text>
@@ -1710,29 +1930,6 @@ function ActionMenu({
 
 function SectionLabel({ children }: { children: React.ReactNode }) {
   return <Text style={styles.sectionLabel}>{children}</Text>;
-}
-
-function Waveform() {
-  return (
-    <View style={styles.waveform}>
-      {Array.from({ length: 42 }, (_, index) => {
-        const height = 6 + Math.abs(Math.sin(index * 0.74)) * 26;
-
-        return (
-          <View
-            key={index}
-            style={[
-              styles.waveBar,
-              {
-                backgroundColor: index < 18 ? APPLE_ORANGE : 'rgba(255, 244, 227, 0.22)',
-                height,
-              },
-            ]}
-          />
-        );
-      })}
-    </View>
-  );
 }
 
 function SymbolIcon({
@@ -1786,6 +1983,9 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 11,
   },
+  actionRowDisabled: {
+    opacity: 0.55,
+  },
   actionRowSuggested: {
     backgroundColor: 'rgba(255, 150, 92, 0.11)',
     borderColor: 'rgba(255, 150, 92, 0.38)',
@@ -1795,6 +1995,9 @@ const styles = StyleSheet.create({
     fontFamily: bodyFont,
     fontSize: 12,
     lineHeight: 16,
+  },
+  actionSubError: {
+    color: '#ffc2c2',
   },
   actionTextWrap: {
     flex: 1,
@@ -1893,6 +2096,10 @@ const styles = StyleSheet.create({
     paddingHorizontal: 13,
     paddingVertical: 7,
     position: 'absolute',
+  },
+  hintWarning: {
+    backgroundColor: 'rgba(75, 36, 24, 0.94)',
+    borderColor: 'rgba(255, 174, 140, 0.32)',
   },
   hintText: {
     color: 'rgba(255, 244, 227, 0.7)',
@@ -1994,6 +2201,21 @@ const styles = StyleSheet.create({
   },
   recordNodeButtonActive: {
     backgroundColor: '#ff7f4d',
+  },
+  recordNodeButtonError: {
+    backgroundColor: '#ffb0b0',
+  },
+  recordNodeStatus: {
+    color: 'rgba(255, 244, 227, 0.8)',
+    fontFamily: bodyFont,
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 0.4,
+    marginTop: 10,
+    textTransform: 'uppercase',
+  },
+  recordNodeStatusError: {
+    color: '#ffd2d2',
   },
   recordNodeWrap: {
     alignItems: 'center',

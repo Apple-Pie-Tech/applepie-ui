@@ -131,12 +131,15 @@ function TabPill({ accessibilityLabel, icon, isFocused, ...rest }: TabPillProps)
 }
 
 function RecordingControls() {
-  const { cancel, elapsedSeconds, pause, resume, send, start, status } = useRecording();
+  const { cancel, elapsedSeconds, lastRecording, pause, resume, send, start, status, statusLabel } = useRecording();
   const pulse = useRef(new Animated.Value(0)).current;
   const isRecording = status === 'recording';
   const isPaused = status === 'paused';
+  const isSending = status === 'sending';
   const isSent = status === 'sent';
+  const hasError = status === 'error';
   const canFinish = isRecording || isPaused;
+  const canRetry = hasError && lastRecording !== null;
 
   useEffect(() => {
     if (!isRecording) {
@@ -167,8 +170,11 @@ function RecordingControls() {
   }, [isRecording, pulse]);
 
   const togglePrimary = () => {
-    if (status === 'idle' || status === 'sent') {
+    if (status === 'idle' || status === 'sent' || status === 'error') {
       start();
+      return;
+    }
+    if (isSending) {
       return;
     }
     if (isRecording) {
@@ -188,12 +194,15 @@ function RecordingControls() {
     <View style={styles.recordingRow}>
       <RoundButton
         accessibilityLabel="Cancel recording"
-        disabled={!canFinish && !isSent}
+        disabled={!canFinish && !isSent && !hasError}
         icon={{ android: 'close', ios: 'xmark', web: 'close' }}
         onPress={cancel}
       />
       <WaveStrip pulse={pulse} recording={isRecording} />
-      <Text style={styles.timer}>{formatElapsed(elapsedSeconds)}</Text>
+      <View style={styles.timerStack}>
+        <Text style={styles.timer}>{formatElapsed(elapsedSeconds)}</Text>
+        {statusLabel ? <Text style={[styles.timerStatus, hasError && styles.timerStatusError]}>{statusLabel}</Text> : null}
+      </View>
       <RoundButton
         accessibilityLabel={isRecording ? 'Pause' : 'Record'}
         icon={primaryIcon}
@@ -201,14 +210,17 @@ function RecordingControls() {
         primary
       />
       <RoundButton
-        accessibilityLabel={isSent ? 'Sent' : 'Send recording'}
-        disabled={!canFinish}
+        accessibilityLabel={isSent ? 'Sent' : hasError ? 'Retry send' : isSending ? 'Sending recording' : 'Send recording'}
+        disabled={!canFinish && !canRetry}
         icon={
           isSent
             ? { android: 'check', ios: 'checkmark', web: 'check' }
+            : hasError
+              ? { android: 'refresh', ios: 'arrow.clockwise', web: 'refresh' }
             : { android: 'send', ios: 'paperplane.fill', web: 'send' }
         }
         onPress={send}
+        danger={hasError}
         success={isSent}
       />
     </View>
@@ -256,6 +268,7 @@ function RoundButton({
   icon,
   onPress,
   primary = false,
+  danger = false,
   success = false,
 }: {
   accessibilityLabel: string;
@@ -263,6 +276,7 @@ function RoundButton({
   icon: { android: AndroidSymbol; ios: SFSymbol; web: AndroidSymbol };
   onPress: () => void;
   primary?: boolean;
+  danger?: boolean;
   success?: boolean;
 }) {
   return (
@@ -274,6 +288,7 @@ function RoundButton({
       style={({ pressed }) => [
         styles.roundButton,
         primary && styles.roundButtonPrimary,
+        danger && styles.roundButtonDanger,
         success && styles.roundButtonSuccess,
         disabled && styles.roundButtonDisabled,
         pressed && !disabled && styles.pressed,
@@ -363,6 +378,10 @@ const styles = StyleSheet.create({
     backgroundColor: '#8ee8a8',
     borderColor: 'rgba(142, 232, 168, 0.78)',
   },
+  roundButtonDanger: {
+    backgroundColor: 'rgba(255, 122, 122, 0.18)',
+    borderColor: 'rgba(255, 122, 122, 0.48)',
+  },
   slot: {
     flex: 1,
   },
@@ -386,6 +405,21 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     minWidth: 36,
     textAlign: 'center',
+  },
+  timerStack: {
+    alignItems: 'center',
+    gap: 2,
+    minWidth: 58,
+  },
+  timerStatus: {
+    color: 'rgba(255, 244, 227, 0.64)',
+    fontSize: 10,
+    fontWeight: '700',
+    letterSpacing: 0.3,
+    textTransform: 'uppercase',
+  },
+  timerStatusError: {
+    color: '#ffb4b4',
   },
   waveBar: {
     backgroundColor: APPLE_ORANGE,

@@ -15,7 +15,9 @@ import React, {
   useState,
 } from 'react';
 
-export type RecordingStatus = 'idle' | 'recording' | 'paused' | 'sent';
+import { IngestResult, submitRecordingToIngest } from './ingest-client';
+
+export type RecordingStatus = 'idle' | 'recording' | 'paused' | 'sending' | 'sent' | 'error';
 
 export type RecordingResult = {
   uri: string;
@@ -26,6 +28,8 @@ export type RecordingResult = {
 type RecordingContextValue = {
   cancel: () => void;
   elapsedSeconds: number;
+  ingestError: string | null;
+  ingestResult: IngestResult | null;
   lastRecording: RecordingResult | null;
   pause: () => void;
   permissionGranted: boolean;
@@ -33,6 +37,7 @@ type RecordingContextValue = {
   send: () => void;
   start: () => void;
   status: RecordingStatus;
+  statusLabel: string | null;
   toggle: () => void;
 };
 
@@ -44,6 +49,8 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
 
   const [status, setStatus] = useState<RecordingStatus>('idle');
   const [lastRecording, setLastRecording] = useState<RecordingResult | null>(null);
+  const [ingestError, setIngestError] = useState<string | null>(null);
+  const [ingestResult, setIngestResult] = useState<IngestResult | null>(null);
   const [permissionGranted, setPermissionGranted] = useState(false);
   const [frozenElapsed, setFrozenElapsed] = useState<number | null>(null);
   const resetTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -84,8 +91,10 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
 
   const start = useCallback(() => {
     clearResetTimer();
-    setLastRecording(null);
     setFrozenElapsed(null);
+    setIngestError(null);
+    setIngestResult(null);
+    setLastRecording(null);
 
     (async () => {
       try {
@@ -131,6 +140,8 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
   const cancel = useCallback(() => {
     clearResetTimer();
     setFrozenElapsed(null);
+    setIngestError(null);
+    setIngestResult(null);
     setLastRecording(null);
     setStatus('idle');
 
@@ -145,36 +156,53 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
 
   const send = useCallback(() => {
     clearResetTimer();
-    const finalElapsed = Math.floor((recorderState.durationMillis ?? 0) / 1000);
+    const canRetry = status === 'error' && lastRecording !== null;
+    const canSendCurrent = status === 'recording' || status === 'paused';
+
+    if (!canRetry && !canSendCurrent) {
+      return;
+    }
+
+    const finalElapsed = lastRecording?.durationSeconds ?? Math.floor((recorderState.durationMillis ?? 0) / 1000);
     setFrozenElapsed(finalElapsed);
+    setIngestError(null);
+    setIngestResult(null);
+    setStatus('sending');
 
     (async () => {
       try {
-        await recorder.stop();
-        const uri = recorder.uri;
+        const recording = canRetry
+          ? lastRecording
+          : await finalizeRecording({
+              finalElapsed,
+              recorder,
+            });
 
-        if (uri) {
-          setLastRecording({
-            uri,
-            durationSeconds: finalElapsed,
-            createdAt: Date.now(),
-          });
-        }
+        setLastRecording(recording);
+
+        const result = await submitRecordingToIngest(recording);
+        setIngestResult(result);
+        setStatus('sent');
+
+        resetTimerRef.current = setTimeout(() => {
+          setStatus('idle');
+          setFrozenElapsed(null);
+          resetTimerRef.current = null;
+        }, 1400);
       } catch (err) {
-        console.warn('[recording] failed to finalize', err);
+        const message = err instanceof Error ? err.message : 'Upload failed';
+        setIngestError(message);
+        setStatus('error');
+        console.warn('[recording] failed to send', err);
       }
     })();
-
-    setStatus('sent');
-
-    resetTimerRef.current = setTimeout(() => {
-      setStatus('idle');
-      setFrozenElapsed(null);
-      resetTimerRef.current = null;
-    }, 1050);
-  }, [clearResetTimer, recorder, recorderState.durationMillis]);
+  }, [clearResetTimer, lastRecording, recorder, recorderState.durationMillis, status]);
 
   const toggle = useCallback(() => {
+    if (status === 'sending') {
+      return;
+    }
+
     if (status === 'recording') {
       pause();
       return;
@@ -197,12 +225,27 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
 
   const liveElapsed = Math.floor((recorderState.durationMillis ?? 0) / 1000);
   const elapsedSeconds =
-    status === 'idle' ? 0 : status === 'sent' && frozenElapsed != null ? frozenElapsed : liveElapsed;
+    status === 'idle'
+      ? 0
+      : (status === 'sending' || status === 'sent' || status === 'error') && frozenElapsed != null
+        ? frozenElapsed
+        : liveElapsed;
+
+  const statusLabel =
+    status === 'sending'
+      ? 'Sending…'
+      : status === 'sent'
+        ? 'Saved'
+        : status === 'error'
+          ? 'Retry ready'
+          : null;
 
   const value = useMemo(
     () => ({
       cancel,
       elapsedSeconds,
+      ingestError,
+      ingestResult,
       lastRecording,
       pause,
       permissionGranted,
@@ -210,11 +253,14 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
       send,
       start,
       status,
+      statusLabel,
       toggle,
     }),
     [
       cancel,
       elapsedSeconds,
+      ingestError,
+      ingestResult,
       lastRecording,
       pause,
       permissionGranted,
@@ -222,6 +268,7 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
       send,
       start,
       status,
+      statusLabel,
       toggle,
     ],
   );
@@ -237,4 +284,25 @@ export function useRecording() {
   }
 
   return context;
+}
+
+async function finalizeRecording({
+  finalElapsed,
+  recorder,
+}: {
+  finalElapsed: number;
+  recorder: ReturnType<typeof useAudioRecorder>;
+}): Promise<RecordingResult> {
+  await recorder.stop();
+  const uri = recorder.uri;
+
+  if (!uri) {
+    throw new Error('Recording file unavailable');
+  }
+
+  return {
+    createdAt: Date.now(),
+    durationSeconds: finalElapsed,
+    uri,
+  };
 }
