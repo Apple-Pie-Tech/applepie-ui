@@ -21,6 +21,8 @@ import { useRecording } from '@/features/recording/recording-state';
 import {
   createPodcast,
   fetchPodcastDetail,
+  fetchPodcasts,
+  mergePodcastListItem,
   fetchUniverse,
   ProvisionPodcastDetail,
 } from '@/features/universe/provision-client';
@@ -310,6 +312,7 @@ export function UniverseScreen({ mode = 'universe' }: { mode?: UniverseMode } = 
   const [showHint, setShowHint] = useState(true);
   const [provisionState, setProvisionState] = useState<'loading' | 'ready' | 'error'>('loading');
   const [provisionError, setProvisionError] = useState<string | null>(null);
+  const [podcastHydrationError, setPodcastHydrationError] = useState<string | null>(null);
   const [podcastJobsByLabel, setPodcastJobsByLabel] = useState<Record<string, ProvisionPodcastDetail>>({});
   const [podcastErrorsByLabel, setPodcastErrorsByLabel] = useState<Record<string, string>>({});
   const [podcastPendingLabel, setPodcastPendingLabel] = useState<string | null>(null);
@@ -427,6 +430,49 @@ export function UniverseScreen({ mode = 'universe' }: { mode?: UniverseMode } = 
   useEffect(() => {
     void loadUniverse();
   }, [loadUniverse]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const hydratePodcasts = async () => {
+      try {
+        const podcasts = await fetchPodcasts();
+        if (cancelled) {
+          return;
+        }
+
+        setPodcastHydrationError(null);
+
+        setPodcastJobsByLabel((current) => {
+          const next = { ...current };
+          podcasts.forEach((item) => {
+            const existing = current[item.label];
+            next[item.label] =
+              existing && existing.id !== item.id ? existing : mergePodcastListItem(item, existing);
+          });
+          return next;
+        });
+      } catch (error) {
+        if (cancelled) {
+          return;
+        }
+
+        setPodcastHydrationError(
+          error instanceof Error
+            ? `${error.message}. Existing podcast jobs will not restore until refresh.`
+            : 'Existing podcast jobs could not be restored. You can still create a new one.',
+        );
+
+        return;
+      }
+    };
+
+    void hydratePodcasts();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     const activeJobs = Object.values(podcastJobsByLabel).filter(
@@ -1041,6 +1087,18 @@ export function UniverseScreen({ mode = 'universe' }: { mode?: UniverseMode } = 
           </View>
         )}
 
+        {!isRecordMode && podcastHydrationError && (
+          <View
+            pointerEvents="none"
+            style={[
+              styles.hint,
+              styles.hintWarning,
+              { bottom: navigationInset + (provisionError ? 152 : 88) },
+            ]}>
+            <Text style={styles.hintText}>{podcastHydrationError}</Text>
+          </View>
+        )}
+
         <RecordNodeOverlay active={isRecordMode} layout={layout} morphProgress={morphProgress} />
       </View>
 
@@ -1630,6 +1688,9 @@ function StarParticle({
   target: { x: number; y: number };
 }) {
   const progress = useRef(new Animated.Value(0)).current;
+  const { height, width } = layout;
+  const targetX = target.x;
+  const targetY = target.y;
   const [seed, setSeed] = useState(() => makeStarSeed(index, layout, target));
 
   useEffect(() => {
@@ -1641,7 +1702,7 @@ function StarParticle({
         return;
       }
 
-      setSeed(makeStarSeed(index, layout, target));
+      setSeed(makeStarSeed(index, { height, width }, { x: targetX, y: targetY }));
       progress.setValue(0);
       Animated.timing(progress, {
         toValue: 1,
@@ -1664,7 +1725,7 @@ function StarParticle({
       }
       progress.stopAnimation();
     };
-  }, [index, layout.height, layout.width, progress, target.x, target.y]);
+  }, [height, index, progress, targetX, targetY, width]);
 
   const translateX = progress.interpolate({
     inputRange: [0, 1],

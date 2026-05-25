@@ -16,6 +16,23 @@ npm run ios
 npm run android
 ```
 
+## Automated verification
+
+Use the same commands locally that CI runs for the checked-in non-microphone path:
+
+```bash
+npm run lint
+npm run typecheck
+npm run export:web
+```
+
+For the browser verification, start Expo web in one shell and run Playwright in another after `http://127.0.0.1:8081` is up:
+
+```bash
+npm run web
+npm run test:playwright-ui
+```
+
 ## Environment variables
 
 The UI now uses two optional env vars for the ingest handoff and one for the provisioning API:

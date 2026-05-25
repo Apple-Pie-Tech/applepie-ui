@@ -44,19 +44,32 @@ export type ProvisionPodcastDetail = ProvisionPodcastListItem & {
   script?: ProvisionPodcastScript | null;
 };
 
-export async function fetchUniverse(): Promise<ProvisionUniverseResponse> {
-  const payload = await requestJson(getProvisionEndpoint('/universe'));
+export function mergePodcastListItem(
+  item: ProvisionPodcastListItem,
+  existing?: ProvisionPodcastDetail | null,
+): ProvisionPodcastDetail {
+  const preserveDetails = existing?.id === item.id;
+
   return {
-    edges: readRequiredArray(payload?.edges, 'edges').map((item) => ({
-      source_id: readRequiredString(item?.source_id, 'source_id'),
-      target_id: readRequiredString(item?.target_id, 'target_id'),
+    ...item,
+    error: preserveDetails ? existing?.error ?? null : null,
+    script: preserveDetails ? existing?.script ?? null : null,
+  };
+}
+
+export async function fetchUniverse(): Promise<ProvisionUniverseResponse> {
+  const payload = asRecord(await requestJson(getProvisionEndpoint('/universe')), 'universe');
+  return {
+    edges: readRequiredRecordArray(payload.edges, 'edges').map((item) => ({
+      source_id: readRequiredString(item.source_id, 'source_id'),
+      target_id: readRequiredString(item.target_id, 'target_id'),
     })),
-    points: readRequiredArray(payload?.points, 'points').map((item) => ({
-      audio_url: readOptionalString(item?.audio_url),
-      id: readRequiredString(item?.id, 'id'),
-      is_central: readOptionalBoolean(item?.is_central),
-      is_synthetic: readOptionalBoolean(item?.is_synthetic),
-      label: readRequiredString(item?.label, 'label'),
+    points: readRequiredRecordArray(payload.points, 'points').map((item) => ({
+      audio_url: readOptionalString(item.audio_url),
+      id: readRequiredString(item.id, 'id'),
+      is_central: readOptionalBoolean(item.is_central),
+      is_synthetic: readOptionalBoolean(item.is_synthetic),
+      label: readRequiredString(item.label, 'label'),
     })),
   };
 }
@@ -77,10 +90,14 @@ export async function fetchPodcastDetail(podcastId: string): Promise<ProvisionPo
   return parsePodcastDetail(await requestJson(getProvisionEndpoint(`/podcasts/${podcastId}`)));
 }
 
-async function requestJson(input: string, init?: RequestInit): Promise<Record<string, unknown>> {
+export async function fetchPodcasts(): Promise<ProvisionPodcastListItem[]> {
+  return parsePodcastList(await requestJson(getProvisionEndpoint('/podcasts')));
+}
+
+async function requestJson(input: string, init?: RequestInit): Promise<unknown> {
   const response = await fetch(input, init);
   const text = await response.text();
-  const payload = parseRecord(text);
+  const payload = parseJsonValue(text);
 
   if (!response.ok) {
     throw new Error(getErrorMessage(payload, response.status));
@@ -89,14 +106,27 @@ async function requestJson(input: string, init?: RequestInit): Promise<Record<st
   return payload;
 }
 
-function parsePodcastDetail(payload: Record<string, unknown>): ProvisionPodcastDetail {
+function parsePodcastDetail(payload: unknown): ProvisionPodcastDetail {
+  const record = asRecord(payload, 'detail');
+  const item = parsePodcastListItem(record);
+
+  return {
+    ...item,
+    error: readOptionalString(record.error) ?? null,
+    script: parseOptionalScript(record.script),
+  };
+}
+
+function parsePodcastList(payload: unknown): ProvisionPodcastListItem[] {
+  return readRequiredRecordArray(payload, 'podcasts').map((item) => parsePodcastListItem(item));
+}
+
+function parsePodcastListItem(payload: Record<string, unknown>): ProvisionPodcastListItem {
   return {
     audio_url: readOptionalString(payload.audio_url) ?? null,
     cover_url: readOptionalString(payload.cover_url) ?? null,
-    error: readOptionalString(payload.error) ?? null,
     id: readRequiredString(payload.id, 'id'),
     label: readRequiredString(payload.label, 'label'),
-    script: parseOptionalScript(payload.script),
     status: readRequiredStatus(payload.status),
   };
 }
@@ -107,34 +137,31 @@ function parseOptionalScript(value: unknown): ProvisionPodcastScript | null {
   }
 
   return {
-    parts: readRequiredArray(value.parts, 'script.parts').map((item) => ({
-      speaker: readRequiredString(item?.speaker, 'speaker'),
-      text: readRequiredString(item?.text, 'text'),
+    parts: readRequiredRecordArray(value.parts, 'script.parts').map((item) => ({
+      speaker: readRequiredString(item.speaker, 'speaker'),
+      text: readRequiredString(item.text, 'text'),
     })),
   };
 }
 
-function parseRecord(text: string): Record<string, unknown> {
+function parseJsonValue(text: string): unknown {
   if (!text.trim()) {
     throw new Error('Provision API returned an empty response');
   }
 
   try {
-    const payload: unknown = JSON.parse(text);
-    if (isRecord(payload)) {
-      return payload;
-    }
+    return JSON.parse(text) as unknown;
   } catch {
-    // fall through to a generic error below
+    throw new Error('Provision API returned invalid JSON');
   }
-
-  throw new Error('Provision API returned invalid JSON');
 }
 
-function getErrorMessage(payload: Record<string, unknown>, statusCode: number) {
-  const detail = payload.detail;
-  if (typeof detail === 'string' && detail.trim()) {
-    return detail.trim();
+function getErrorMessage(payload: unknown, statusCode: number) {
+  if (isRecord(payload)) {
+    const detail = payload.detail;
+    if (typeof detail === 'string' && detail.trim()) {
+      return detail.trim();
+    }
   }
 
   return `Provision API request failed (${statusCode})`;
@@ -144,8 +171,19 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
 }
 
-function readRequiredArray(value: unknown, fieldName: string): Record<string, unknown>[] {
+function readRequiredRecordArray(
+  value: unknown,
+  fieldName: string,
+): Record<string, unknown>[] {
   if (Array.isArray(value) && value.every(isRecord)) {
+    return value;
+  }
+
+  throw new Error(`Provision response missing ${fieldName}`);
+}
+
+function asRecord(value: unknown, fieldName: string): Record<string, unknown> {
+  if (isRecord(value)) {
     return value;
   }
 
