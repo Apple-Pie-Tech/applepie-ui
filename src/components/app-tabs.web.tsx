@@ -1,4 +1,4 @@
-import { type Href } from 'expo-router';
+import { usePathname, type Href } from 'expo-router';
 import {
   TabList,
   TabListProps,
@@ -8,13 +8,15 @@ import {
   Tabs,
 } from 'expo-router/ui';
 import { SymbolView, type AndroidSymbol, type SFSymbol } from 'expo-symbols';
-import React, { useEffect, useRef } from 'react';
-import { Animated, Easing, Pressable, StyleSheet, Text, View } from 'react-native';
+import React, { useEffect, useRef, useState } from 'react';
+import { Animated, Easing, Pressable, StyleSheet, Text, View, type ViewStyle } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { Fonts } from '@/constants/theme';
 import { useRecording } from '@/features/recording/recording-state';
 
 const APPLE_ORANGE = '#ff965c';
+const GLASS_FILTER = 'blur(22px) saturate(150%)';
 const SPACE = '#03050c';
 const TEXT = '#fff4e3';
 
@@ -29,7 +31,7 @@ export default function AppTabs() {
       <TabSlot style={styles.slot} />
       <TabList asChild>
         <FloatingTabBar>
-          <TabTrigger name="home" href="/" asChild>
+          <TabTrigger name="index" href="/" asChild>
             <TabPill
               accessibilityLabel="Universe"
               icon={{
@@ -53,8 +55,16 @@ export default function AppTabs() {
 
 function FloatingTabBar(props: TabListProps) {
   const insets = useSafeAreaInsets();
+  const pathname = usePathname();
   const recording = useRecording();
-  const active = recording.status !== 'idle';
+  const retryReady = recording.status === 'error' && recording.lastRecording !== null;
+  const active =
+    recording.status === 'recording' ||
+    recording.status === 'paused' ||
+    recording.status === 'sending' ||
+    recording.status === 'sent' ||
+    retryReady;
+  const showRouteStatus = pathname === '/record' && recording.status === 'error' && !retryReady;
   const morph = useRef(new Animated.Value(active ? 1 : 0)).current;
 
   useEffect(() => {
@@ -82,12 +92,12 @@ function FloatingTabBar(props: TabListProps) {
   const bottomOffset = Math.max(insets.bottom + 12, 22);
 
   return (
-    <View pointerEvents="box-none" style={[styles.dockWrap, { bottom: bottomOffset }]}>
-      <Animated.View style={[styles.pill, { width, height }]}>
-        <View
-          // @ts-expect-error - web-only style for the glass effect
-          style={[StyleSheet.absoluteFill, styles.pillBg, { backdropFilter: 'blur(22px) saturate(150%)', WebkitBackdropFilter: 'blur(22px) saturate(150%)' }]}
-        />
+    <View pointerEvents="box-none" style={[styles.dockWrap, { bottom: bottomOffset }]}> 
+      {showRouteStatus ? (
+        <RecordingRouteStatus detail={recording.ingestError} label={recording.statusLabel} />
+      ) : null}
+      <Animated.View style={[styles.pill, { width, height }]}> 
+        <GlassBackdrop />
         <Animated.View
           pointerEvents={active ? 'none' : 'auto'}
           style={[
@@ -109,6 +119,54 @@ function FloatingTabBar(props: TabListProps) {
   );
 }
 
+function RecordingRouteStatus({ detail, label }: { detail: string | null; label: string | null }) {
+  if (!label && !detail) {
+    return null;
+  }
+
+  return (
+    <View aria-live="polite" style={styles.routeStatusCard}>
+      {label ? <Text style={styles.routeStatusLabel}>{label}</Text> : null}
+      {detail ? <Text style={styles.routeStatusDetail}>{detail}</Text> : null}
+    </View>
+  );
+}
+
+type WebGlassStyle = ViewStyle & {
+  WebkitBackdropFilter?: string;
+  backdropFilter?: string;
+};
+
+const pillGlassStyle: WebGlassStyle = {
+  WebkitBackdropFilter: GLASS_FILTER,
+  backdropFilter: GLASS_FILTER,
+};
+
+function GlassBackdrop() {
+  const [supportsGlass, setSupportsGlass] = useState(false);
+
+  useEffect(() => {
+    if (typeof globalThis.CSS?.supports !== 'function') {
+      return;
+    }
+
+    setSupportsGlass(
+      globalThis.CSS.supports('backdrop-filter: blur(1px)') ||
+        globalThis.CSS.supports('-webkit-backdrop-filter: blur(1px)'),
+    );
+  }, []);
+
+  return (
+    <>
+      <View pointerEvents="none" style={[StyleSheet.absoluteFill, styles.pillFallback]} />
+      {supportsGlass ? (
+        <View pointerEvents="none" style={[StyleSheet.absoluteFill, styles.pillGlass, pillGlassStyle]} />
+      ) : null}
+      <View pointerEvents="none" style={[StyleSheet.absoluteFill, styles.pillRim]} />
+    </>
+  );
+}
+
 type TabPillProps = TabTriggerSlotProps & {
   accessibilityLabel: string;
   icon: { android: AndroidSymbol; ios: SFSymbol; web: AndroidSymbol };
@@ -120,6 +178,8 @@ function TabPill({ accessibilityLabel, icon, isFocused, ...rest }: TabPillProps)
       {...rest}
       accessibilityLabel={accessibilityLabel}
       accessibilityRole="tab"
+      accessibilityState={{ selected: isFocused }}
+      aria-selected={isFocused}
       style={({ pressed }) => [
         styles.tabPill,
         isFocused ? styles.tabPillActive : styles.tabPillIdle,
@@ -131,7 +191,8 @@ function TabPill({ accessibilityLabel, icon, isFocused, ...rest }: TabPillProps)
 }
 
 function RecordingControls() {
-  const { cancel, elapsedSeconds, lastRecording, pause, resume, send, start, status, statusLabel } = useRecording();
+  const { cancel, elapsedSeconds, ingestError, lastRecording, pause, resume, send, start, status, statusLabel } =
+    useRecording();
   const pulse = useRef(new Animated.Value(0)).current;
   const isRecording = status === 'recording';
   const isPaused = status === 'paused';
@@ -184,6 +245,8 @@ function RecordingControls() {
     resume();
   };
 
+  const primaryLabel = isRecording ? 'Pause' : isPaused ? 'Resume' : hasError || isSent ? 'Record again' : 'Record';
+
   const primaryIcon: { android: AndroidSymbol; ios: SFSymbol; web: AndroidSymbol } = isSent
     ? { android: 'mic', ios: 'mic.fill', web: 'mic' }
     : isRecording
@@ -202,9 +265,14 @@ function RecordingControls() {
       <View style={styles.timerStack}>
         <Text style={styles.timer}>{formatElapsed(elapsedSeconds)}</Text>
         {statusLabel ? <Text style={[styles.timerStatus, hasError && styles.timerStatusError]}>{statusLabel}</Text> : null}
+        {hasError && ingestError ? (
+          <Text numberOfLines={3} style={styles.timerErrorDetail}>
+            {ingestError}
+          </Text>
+        ) : null}
       </View>
       <RoundButton
-        accessibilityLabel={isRecording ? 'Pause' : 'Record'}
+        accessibilityLabel={primaryLabel}
         icon={primaryIcon}
         onPress={togglePrimary}
         primary
@@ -314,6 +382,7 @@ const styles = StyleSheet.create({
     left: 0,
     position: 'absolute',
     right: 0,
+    zIndex: 20,
   },
   idleRow: {
     alignItems: 'center',
@@ -336,8 +405,47 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.32,
     shadowRadius: 22,
   },
-  pillBg: {
+  routeStatusCard: {
+    backgroundColor: 'rgba(10, 14, 28, 0.92)',
+    borderColor: 'rgba(255, 180, 180, 0.34)',
+    borderRadius: 18,
+    borderWidth: StyleSheet.hairlineWidth,
+    marginBottom: 12,
+    maxWidth: 356,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.24,
+    shadowRadius: 18,
+  },
+  routeStatusDetail: {
+    color: '#ffdede',
+    fontFamily: Fonts.sans,
+    fontSize: 11,
+    fontWeight: '600',
+    lineHeight: 15,
+    textAlign: 'center',
+  },
+  routeStatusLabel: {
+    color: '#fff4e3',
+    fontFamily: Fonts.sans,
+    fontSize: 11,
+    fontWeight: '800',
+    letterSpacing: 0.4,
+    marginBottom: 4,
+    textAlign: 'center',
+    textTransform: 'uppercase',
+  },
+  pillFallback: {
+    backgroundColor: 'rgba(8, 12, 23, 0.74)',
+    borderRadius: 999,
+  },
+  pillGlass: {
     backgroundColor: 'rgba(8, 12, 23, 0.42)',
+    borderRadius: 999,
+  },
+  pillRim: {
     borderColor: 'rgba(255, 244, 227, 0.18)',
     borderRadius: 999,
     borderWidth: StyleSheet.hairlineWidth,
@@ -400,7 +508,7 @@ const styles = StyleSheet.create({
   },
   timer: {
     color: TEXT,
-    fontFamily: 'ui-monospace',
+    fontFamily: Fonts.mono,
     fontSize: 12,
     fontWeight: '800',
     minWidth: 36,
@@ -409,10 +517,11 @@ const styles = StyleSheet.create({
   timerStack: {
     alignItems: 'center',
     gap: 2,
-    minWidth: 58,
+    minWidth: 116,
   },
   timerStatus: {
     color: 'rgba(255, 244, 227, 0.64)',
+    fontFamily: Fonts.sans,
     fontSize: 10,
     fontWeight: '700',
     letterSpacing: 0.3,
@@ -420,6 +529,15 @@ const styles = StyleSheet.create({
   },
   timerStatusError: {
     color: '#ffb4b4',
+  },
+  timerErrorDetail: {
+    color: '#ffd3d3',
+    fontFamily: Fonts.sans,
+    fontSize: 9,
+    fontWeight: '600',
+    lineHeight: 12,
+    maxWidth: 132,
+    textAlign: 'center',
   },
   waveBar: {
     backgroundColor: APPLE_ORANGE,
