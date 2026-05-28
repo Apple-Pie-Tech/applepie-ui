@@ -1,0 +1,14 @@
+# issues
+
+- Runtime verification with `tsx` hit a harness issue when importing `react-native` directly in Node (`Unexpected "typeof"` from the package source). The app code is still type-safe, but Node-based runtime checks need a mock/alias layer if we want to exercise RevenueCat end-to-end outside Expo.
+- Root cause of the web export failure: `expo-sqlite/localStorage/install` pulled `expo-sqlite/web/worker.ts`, which in turn required a missing `wa-sqlite.wasm` asset during `expo export --platform web`.
+- Resolution: replaced the SQLite-backed Supabase storage bootstrap with a web-safe adapter that uses browser `localStorage` when `window` exists and a memory fallback during static rendering, while keeping `AsyncStorage` for native session persistence.
+- Verified the fix with `EXPO_PUBLIC_SUPABASE_URL` and `EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY` set: `npm run export:web` now completes successfully.
+
+- Local `npm run export:web` still fails immediately when the required Supabase env vars are unset because `src/lib/supabase.ts` imports the fail-fast env guard at module scope. For verification in an otherwise clean shell, use placeholder `EXPO_PUBLIC_SUPABASE_URL` and `EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY` values.
+
+- Root cause for the blank `/auth` surface: the old `src/app/_layout.tsx` mounted a pure custom tabs navigator at the root, so sibling routes like `src/app/auth.tsx` existed in the file tree but had no proper stack slot outside the tabs shell. Browser verification showed `/auth?...` rendering only shell chrome / blank content until the route tree was split.
+- Resolution for the shell bug: move `/` and `/record` into a hidden `src/app/(tabs)/` group with its own `_layout.tsx` that returns `AppTabs`, then let the root `src/app/_layout.tsx` host a `Stack` with `(tabs)` and `auth` as siblings under the existing providers.
+- Post-fix verification confirms `/auth` is reachable, but the targeted Playwright rerun still surfaces separate downstream flow/test failures (for example restored generation-menu expectations and record-state continuity after auth). Those failures are no longer caused by the auth route being blank.
+- Follow-up root cause for the remaining browser failures: signed-in podcast tests were still blocked because web RevenueCat sync always resolves to `not-entitled` unless a test override is present, and mocked `verifyOtp()` responses were not a reliable way to establish persistent browser auth state for these Playwright runs.
+- Follow-up resolution: switch Playwright setup to seed the actual Supabase web storage key for signed-in cases, keep signed-out auth CTA assertions on the real `/auth` screen, and add a tiny web-only entitlement override (`applepie.test.activeEntitlements`) so podcast-generation flows can be exercised under browser mocks.

@@ -1,0 +1,160 @@
+
+- 2026-05-27: Playwright web parity harness now starts the existing `npm run web` server automatically from `playwright.config.ts` unless `PLAYWRIGHT_BASE_URL` is provided, so grep-targeted browser checks can run without a separate manual server shell.
+- 2026-05-27: `tests/browser/universe-ui.spec.ts` now has grep-friendly route coverage for the baseline `/` path and the explicit failing `/universe` path. In the current Expo Router setup, `/universe` resolves to the unmatched-route UI rather than the universe screen, which is the intended red-path harness for later parity work.
+- 2026-05-27: Recording capability labels can render in both the floating recording dock and the record-node overlay on `/record`, so Playwright assertions for `Recording unavailable` / `Microphone blocked` should scope the locator or use `.first()` instead of relying on a strict single text match.
+## 2026-05-27 - Expo SDK 55 web/static docs findings
+
+- Router docs source note:
+  - Canonical Expo Router web docs are currently unversioned (`/router/...`) even when the project is on SDK 55. Prefer SDK 55 versioned package docs where they exist (`expo-font`, `expo-splash-screen`, `expo-web-browser`), and use the current official Router pages for static/server rendering and layout behavior.
+
+- Static export / static rendering
+  - URLs:
+    - https://docs.expo.dev/router/web/static-rendering/
+    - https://docs.expo.dev/deploy/web/
+    - https://docs.expo.dev/guides/publishing-websites/
+  - Key facts:
+    - `web.output: "static"` renders routes to separate HTML files and `npx expo export --platform web` outputs to `dist`.
+    - `public/` is copied into `dist` during export.
+    - Static output is not an SPA and does not include a custom server API.
+  - Constraints:
+    - Dynamic routes do not work automatically in static mode; they must use `generateStaticParams`.
+    - Request-time rendering is not available in `web.output: "static"`.
+    - Reserved Metro paths such as `public/assets/` should be avoided.
+  - Informs plan tasks:
+    - 3 (shared shell/provider export safety)
+    - 5 (browser/network/static-host assumptions)
+    - 6, 9, 10 (route parity, direct refresh, final regression)
+    - Final verification wave (`npm run export:web`, direct-route behavior)
+
+- Build-time / Node-only static rendering boundaries
+  - URL:
+    - https://docs.expo.dev/router/web/static-rendering/
+  - Key facts:
+    - `generateStaticParams` runs at build time in Node.js.
+    - `src/app/+html.tsx` also runs only in Node.js during static rendering.
+  - Constraints:
+    - No browser APIs (`window`, `document`, `localStorage`) in `generateStaticParams` or `+html.tsx`.
+    - No native Expo APIs in `generateStaticParams`.
+    - Global CSS should not be imported in `+html.tsx`; providers and CSS belong in the root layout instead.
+  - Informs plan tasks:
+    - 3 (provider/bootstrap safety)
+    - 4 (hydration/presentation shell)
+    - 9 (direct refresh / route rendering assumptions)
+
+- Root layout ownership for startup work
+  - URL:
+    - https://docs.expo.dev/router/basics/navigation-layouts/
+  - Key facts:
+    - `src/app/_layout.tsx` is the root layout / navigation entry point.
+    - Expo explicitly documents the root layout as the place for initialization code, font loading, splash-screen coordination, and context providers.
+  - Constraints:
+    - Startup work that affects fonts, splash gating, or providers should stay centralized in `_layout.tsx` rather than being scattered across routes.
+    - Platform-specific tab implementations are a documented pattern; divergence should stay contained in platform files rather than ad hoc route-level branching.
+  - Informs plan tasks:
+    - 3 (shared root shell/providers)
+    - 4 (tab shell / web presentation)
+
+- Fonts on web
+  - URLs:
+    - https://docs.expo.dev/versions/v55.0.0/sdk/font/
+    - https://docs.expo.dev/router/web/static-rendering/
+  - Key facts:
+    - `expo-font` works on web; `loadAsync` generates `@font-face` automatically, so extra CSS is not required.
+    - Expo Router static rendering can extract and embed fonts in HTML for preload + faster hydration when fonts are loaded synchronously.
+  - Constraints:
+    - Static font optimization only applies when using synchronous `Font.loadAsync` / `Font.useFonts` patterns.
+    - Fonts loaded in `useEffect`, deferred components, or async wrappers are not statically optimized.
+    - `FontDisplay` behavior is web-only and is emitted in generated `@font-face`; it is not dynamically changeable per rendered element.
+  - Informs plan tasks:
+    - 4 (fonts / hydration / presentation stability)
+    - 3 (root shell startup ordering)
+    - 10 (visual regression / hydration checks)
+
+- Splash handling
+  - URLs:
+    - https://docs.expo.dev/versions/v55.0.0/sdk/splash-screen/
+    - https://docs.expo.dev/router/basics/navigation-layouts/
+  - Key facts:
+    - Expo documents the standard startup pattern as: call `SplashScreen.preventAutoHideAsync()` in module scope, load resources, then call `hide()` / `hideAsync()` when ready.
+    - The root layout example pairs splash gating with font loading.
+  - Constraints:
+    - `expo-splash-screen` SDK 55 docs list Android/iOS/tvOS support only; it is not a web control surface.
+    - `preventAutoHideAsync()` should be called in global scope without awaiting, or it may run too late.
+    - Splash appearance must be validated on release/native builds; Expo Go/dev behavior is not authoritative.
+  - Informs plan tasks:
+    - 3 (provider/bootstrap ordering)
+    - 4 (startup shell / first paint behavior)
+
+- Static vs server rendering guardrail
+  - URL:
+    - https://docs.expo.dev/router/web/server-rendering/
+  - Key facts:
+    - Server rendering is a separate `web.output: "server"` mode and is alpha in SDK 55+.
+    - Expo says static and server rendering cannot currently be mixed in the same project.
+  - Constraints:
+    - This plan must stay on static output; SSR/server output is a mode switch, not something to layer onto isolated routes.
+    - Server output requires a runtime server and is incompatible with static-host-only assumptions.
+  - Informs plan tasks:
+    - 3, 5, 9, 10
+    - Final verification wave guardrail: no SSR escape hatch while chasing parity
+
+- Browser capability / verification constraints
+  - URLs:
+    - https://docs.expo.dev/guides/publishing-websites/
+    - https://docs.expo.dev/versions/v55.0.0/sdk/webbrowser/
+  - Key facts:
+    - `npx expo serve` is HTTP-only when serving exported output locally.
+    - Expo documents that permissions, camera, location, and many other secure features may not work as expected under HTTP-only local serving.
+    - On web, `expo-web-browser` auth flows require a secure origin (`localhost`/`https`), same-origin completion, and immediate user interaction on mobile browsers.
+  - Constraints:
+    - Local verification of browser-secure capabilities must distinguish HTTP-only export serving from secure-origin behavior.
+    - Browser features that depend on secure context or popup timing should surface explicit UX states instead of failing silently.
+    - `maybeCompleteAuthSession()` is not usable in SSR / non-browser environments.
+  - Informs plan tasks:
+    - 1 (verification harness expectations)
+    - 2 (capability boundary / explicit unsupported states)
+    - 5 (browser/network failure handling)
+    - 8, 10 (recording/browser-permission parity and final regression)
+
+## 2026-05-27 - Expo web shell and route flow findings
+
+- Root shell composition is centralized in `src/app/_layout.tsx:9-17`: the layout reads the color scheme, mounts `ThemeProvider`, mounts `RecordingProvider`, then renders `AnimatedSplashOverlay` and `AppTabs` for every route under the app root.
+- The route outlet lives inside the tab shell. `src/components/app-tabs.web.tsx:26-50` renders `Tabs` with `TabSlot` plus two `TabTrigger`s wired to `/` and `/record`, so the active route screen is injected into the shared shell instead of each route owning its own top-level providers.
+- The two root routes are extremely thin wrappers over the same screen: `src/app/index.tsx:3-4` renders `<UniverseScreen mode="universe" />`, and `src/app/record.tsx:3-4` renders `<UniverseScreen mode="record" />`.
+- `UniverseScreen` already uses a reusable shared-screen pattern for route parity. In `src/features/universe/universe-screen.tsx:301-327`, it accepts a `mode` prop and also reads `usePathname()` so the same component can distinguish `/` from `/record` while staying on a single implementation path.
+- The record/universe presentation split is handled inside `UniverseScreen`, not via separate route trees. `src/features/universe/universe-screen.tsx:375-403` drives the morph animation and record-mode reset logic, while `src/features/universe/universe-screen.tsx:1028-1133` hides top chrome / sheets outside record mode and always mounts `RecordNodeOverlay`.
+- The shell already contains platform-isolated tab implementations as separate files: `src/components/app-tabs.tsx` and `src/components/app-tabs.web.tsx`. `_layout.tsx` imports `@/components/app-tabs` without route-level platform branching (`src/app/_layout.tsx:6`), so the platform split is contained at the component surface.
+- The shell also has a platform-isolated splash/icon surface: `_layout.tsx` imports `@/components/animated-icon` (`src/app/_layout.tsx:5`), while `src/components/animated-icon.tsx:10-45` implements a native splash overlay and `src/components/animated-icon.web.tsx:8-10` makes the web overlay a no-op.
+- Theme constants already carry web-specific values. `src/constants/theme.ts:29-52` defines `Fonts` via `Platform.select(...)` with CSS variable-backed web fonts, and `src/constants/theme.ts:64-65` exposes shared shell sizing constants like `BottomTabInset` and `MaxContentWidth`.
+- The web color-scheme helper is explicitly hydration-aware. `src/hooks/use-color-scheme.web.ts:5-20` returns `'light'` until `useEffect` marks hydration complete, and `src/hooks/use-theme.ts:9-13` is the wrapper that normalizes `'unspecified'` to `'light'` before indexing `Colors`.
+- The recording shell is state-driven rather than route-driven. In `src/components/app-tabs.web.tsx:54-109`, the floating dock morphs between idle tabs and recording controls based on `recording.status !== 'idle'`, which means the same shared shell can swap behaviors without changing routes.
+- `UniverseScreen` bakes in a web-specific spacing adjustment at the screen level. `src/features/universe/universe-screen.tsx:302-304` computes `navigationInset` as `(Platform.OS === 'web' ? 84 : BottomTabInset) + insets.bottom`, so route presentation already assumes a taller bottom reservation on web.
+- No `TODO` or `FIXME` markers were found under `src/` by `grep` during this inspection.
+## 2026-05-27 recording/web flow map
+
+- `src/app/_layout.tsx:5-16` mounts `RecordingProvider` around the whole app. There is no web-specific provider swap or capability wrapper.
+- `src/features/recording/recording-state.tsx:46-83` bootstraps recording on mount by calling `AudioModule.requestRecordingPermissionsAsync()` and, when granted, `setAudioModeAsync({ allowsRecording: true, playsInSilentMode: true })`. Failures only hit `console.warn` and leave `permissionGranted` false.
+- `src/features/recording/recording-state.tsx:92-119` is the start path: clear transient ingest state, re-request permission if needed, call `recorder.prepareToRecordAsync()`, then `recorder.record()`, then set `status` to `recording`.
+- `src/features/recording/recording-state.tsx:121-138` pauses/resumes by calling `recorder.pause()` / `recorder.record()` and updating `status`.
+- `src/features/recording/recording-state.tsx:157-199` is the send path: allow send from `recording` / `paused`, or retry from `error` when `lastRecording` exists; freeze elapsed time; set `status` to `sending`; finalize the current recording or reuse `lastRecording`; then call `submitRecordingToIngest()`.
+- `src/features/recording/recording-state.tsx:183-191` handles send success by storing `ingestResult`, setting `status` to `sent`, and auto-resetting back to `idle` after 1.4s.
+- `src/features/recording/recording-state.tsx:192-197` handles send/finalize failures by setting `ingestError`, switching `status` to `error`, and leaving `lastRecording` available for retry when finalize/upload already produced one.
+- `src/features/recording/recording-state.tsx:289-308` is the finalize boundary: `await recorder.stop()`, read `recorder.uri`, and throw `Recording file unavailable` if no URI exists.
+- `src/features/recording/ingest-client.ts:21-54` is the ingest transport: create `FormData`, wrap `recording.uri` with `new File(recording.uri)`, append metadata plus audio, `POST` to `getIngestEndpoint()`, then parse JSON and throw on non-OK or missing `chunks` / `input_id` / `status`.
+- `src/features/recording/ingest-client.ts:56-68` derives filename/user metadata from the URI tail and `expo-device` values, falling back to `Platform.OS` for `user_id`.
+- `src/constants/ingest.ts:1-15` is only an endpoint/env helper; it is not a recording capability seam.
+- `src/components/app-tabs.web.tsx:133-225` and `src/components/app-tabs.tsx:168-260` both use the shared recording context directly. They read `status`, `statusLabel`, and `lastRecording`, but do not surface `permissionGranted` or `ingestError` explicitly.
+- If web-specific degradation needs a home later, the existing touchpoints are the provider bootstrap/start boundary (`recording-state.tsx:61-77`, `99-117`), finalize boundary (`recording-state.tsx:289-308`), ingest file construction (`ingest-client.ts:23-45`), and the web controls that currently only react to coarse status (`app-tabs.web.tsx:133-225`).
+- 2026-05-27: The shared root shell is now web-safe by importing `useColorScheme` through `@/hooks/use-color-scheme` in `src/app/_layout.tsx`, which lets the `.web` hook return `'light'` until hydration instead of reading the browser color scheme during the initial static render.
+- 2026-05-27: `bootstrapRecordingCapability()` now returns `supported()` immediately on web in `src/features/recording/recording-capability.ts`, so the globally mounted `RecordingProvider` stays shared across routes without probing `window.isSecureContext` or `MediaRecorder` during shell startup; browser capability checks still happen at `ensureRecordingCanStart()` on user action.
+- 2026-05-27: `src/components/animated-icon.web.tsx` is now a true no-op for both `AnimatedSplashOverlay` and `AnimatedIcon`, which removes the unused CSS-module/raw-`div` web splash surface from the static export path and keeps web first paint aligned with the native-only splash ownership.
+- 2026-05-27: `src/components/app-tabs.web.tsx` now renders a hydration-safe glass backdrop by painting an opaque fallback + rim on first render and only enabling `backdrop-filter` after mount when `CSS.supports(...)` confirms browser support; the dock also has an explicit `zIndex` so the floating shell stays above route content on web.
+- 2026-05-27: Browser fetch/CORS failures from the provision and ingest APIs surface to Expo web as opaque request rejections (`Failed to fetch`, `ERR_FAILED`, blocked CORS) rather than HTTP responses, so the client boundaries need to normalize those into explicit user-facing messages before screen/state layers append fallback context like `Showing preview map.` or `Retry ready`.
+- 2026-05-27: In `recording-state.tsx`, `setLastRecording(recording)` is asynchronous, so the first upload failure after a successful finalize must track retryability in a local variable during the send attempt; otherwise the UI falls back to `Recording error` instead of the intended `Retry ready` state.
+- 2026-05-27: The `/record` universe-layout Playwright coverage needs a short settle window after `page.goto('/record')` because `UniverseScreen` still mounts its shared `/universe` fetch on the record route; without that wait, the next viewport navigation can abort the in-flight mocked request and create false diagnostics noise unrelated to the layout assertion.
+- 2026-05-28: `UniverseScreen` now needs an explicit search-result surface on web instead of relying on clicking projected canvas labels. The stable browser-safe path is: open `Search memories` → fill the query → press an explicit search-result button (`Open topic … from search`) → continue into the shared topic sheet/action menu.
+- 2026-05-28: Podcast polling recovery on web must clear `podcastErrorsByLabel` when a later `fetchPodcastDetail()` succeeds; otherwise one transient browser/network failure leaves the generation menu pinned to an old error even after the job reaches `completed`.
+- 2026-05-28: In the RN 0.83 / RN Web typings used here, `accessibilityRole="status"` is rejected on `View`, but the same web-only status surface can stay type-safe with `aria-live="polite"` in `.web.tsx` files.
+- 2026-05-28: Expo Router custom-tab parity on web is sensitive to the trigger `name`. For the root route, the trigger should use the actual route name (`index`) rather than an alias like `home`; otherwise the `/` tab can fall out of sync with direct loads and browser back/forward even when the `href` is correct.
+- 2026-05-28: RN Web did not expose a reliable selected-tab surface for the custom tab anchors here until `app-tabs.web.tsx` set `aria-selected={isFocused}` explicitly on the `Pressable`, which made `/` vs `/record` browser-history parity testable after direct load, refresh, and back/forward navigation.
+- 2026-05-28: The task-10 Playwright gate is stronger when red-path tests assert the browser diagnostics they intentionally trigger instead of merely allowing console/request noise. In `tests/browser/universe-ui.spec.ts`, outage/retry tests now whitelist specific request-failure or HTTP-status diagnostics while keeping happy-path parity journeys on `failOnDiagnostics: true`.

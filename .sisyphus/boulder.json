@@ -1,0 +1,70 @@
+{
+  "active_plan": "/home/filipp/Projects/ApplePie/applepie-ui/.sisyphus/plans/supabase-auth-revenuecat.md",
+  "started_at": "2026-05-28T14:54:26.178Z",
+  "session_ids": [
+    "ses_190eba2baffeDLaMBVW69oXFEM",
+    "ses_190e5a3c1ffexPrjyiPSu0qe5X",
+    "ses_190e7d305ffeQcUAZQOWjDvPpN",
+    "ses_190e5a3e4ffe5rW3OmU05Cb7lq",
+    "ses_190dc4b53ffeluoiwyClDWFOYP",
+    "ses_190e9ef9effeF70rAJFzJufli0",
+    "ses_190e9ef79fferqHdVOyPz35amR",
+    "ses_190e9efe0ffem3M82a4sfSO22x",
+    "ses_190cbed4bffe616ZMQTISotpA0",
+    "ses_190cbedbcffeAjd6BtBL838gIg",
+    "ses_1907ac323ffev0Nk6mrFw6llLF",
+    "ses_190741039ffeXSvosMfCoBT6Fj",
+    "ses_19074107effeOj4WIMNi8H2mn8",
+    "ses_1905e0c3cffeLLNeEd7fz48PAb",
+    "ses_19047446bffeL9E20SlVJhmali"
+  ],
+  "plan_name": "supabase-auth-revenuecat",
+  "agent": "atlas",
+  "task_sessions": {
+    "todo:1": {
+      "task_key": "todo:1",
+      "task_label": "1",
+      "task_title": "Add shared Supabase + RevenueCat foundation",
+      "session_id": "ses_190e7d305ffeQcUAZQOWjDvPpN",
+      "agent": "Sisyphus-Junior",
+      "category": "quick",
+      "updated_at": "2026-05-28T15:05:47.405Z"
+    },
+    "todo:2": {
+      "task_key": "todo:2",
+      "task_label": "2",
+      "task_title": "Add root auth and entitlement provider shell",
+      "session_id": "ses_190e9ef9effeF70rAJFzJufli0",
+      "agent": "Sisyphus-Junior",
+      "category": "deep",
+      "updated_at": "2026-05-28T15:20:05.008Z"
+    },
+    "todo:3": {
+      "task_key": "todo:3",
+      "task_label": "3",
+      "task_title": "Add auth routes and protected action gating",
+      "session_id": "ses_1907ac323ffev0Nk6mrFw6llLF",
+      "agent": "Sisyphus-Junior",
+      "category": "quick",
+      "updated_at": "2026-05-28T17:03:05.678Z"
+    },
+    "todo:4": {
+      "task_key": "todo:4",
+      "task_label": "4",
+      "task_title": "Add account tab and minimal subscription management UI",
+      "session_id": "ses_19074107effeOj4WIMNi8H2mn8",
+      "agent": "Sisyphus-Junior",
+      "category": "visual-engineering",
+      "updated_at": "2026-05-28T17:11:45.939Z"
+    },
+    "todo:6": {
+      "task_key": "todo:6",
+      "task_label": "6",
+      "task_title": "Expand verification coverage and update setup docs",
+      "session_id": "ses_19047446bffeL9E20SlVJhmali",
+      "agent": "Sisyphus-Junior",
+      "category": "quick",
+      "updated_at": "2026-05-28T18:00:51.576Z"
+    }
+  }
+}
