@@ -1,4 +1,3 @@
-import * as Device from 'expo-device';
 import { fetch } from 'expo/fetch';
 import { Platform } from 'react-native';
 
@@ -19,7 +18,15 @@ export type RecordingUpload = {
   uri: string;
 };
 
-export async function submitRecordingToIngest(recording: RecordingUpload): Promise<IngestResult> {
+export async function submitRecordingToIngest(
+  recording: RecordingUpload,
+  userId: string,
+): Promise<IngestResult> {
+  const canonicalUserId = userId.trim();
+  if (!canonicalUserId) {
+    throw new Error('Upload requires an authenticated user.');
+  }
+
   const endpoint = getIngestEndpoint();
   const formData = new FormData();
   const file = await createRecordingUploadAudioBody(recording.uri);
@@ -29,7 +36,7 @@ export async function submitRecordingToIngest(recording: RecordingUpload): Promi
     JSON.stringify({
       input_id: `recording-${recording.createdAt}`,
       timestamp: new Date(recording.createdAt).toISOString(),
-      user_id: getLocalUserId(),
+      user_id: canonicalUserId,
     }),
   );
   formData.append('audio', file, getRecordingFilename(recording));
@@ -83,12 +90,6 @@ function toIngestRequestError(error: unknown) {
   }
 
   return new Error('Upload failed before the ingest service responded.');
-}
-
-function getLocalUserId() {
-  const rawValue = Device.deviceName || Device.modelName || Platform.OS;
-  const sanitized = rawValue.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
-  return sanitized ? `local-${sanitized}` : `local-${Platform.OS}`;
 }
 
 async function readJson(response: Response): Promise<Record<string, unknown> | null> {

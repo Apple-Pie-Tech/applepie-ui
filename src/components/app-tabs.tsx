@@ -1,5 +1,5 @@
 import { GlassView, isLiquidGlassAvailable } from 'expo-glass-effect';
-import { type Href } from 'expo-router';
+import { type Href, useRouter } from 'expo-router';
 import {
   TabList,
   TabListProps,
@@ -22,12 +22,14 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { useRecording } from '@/features/recording/recording-state';
+import { buildAuthHref } from '@/features/auth/auth-flow';
+import { useAuth } from '@/features/auth/auth-state';
 
 const APPLE_ORANGE = '#ff965c';
 const SPACE = '#03050c';
 const TEXT = '#fff4e3';
 
-const COMPACT_WIDTH = 132;
+const COMPACT_WIDTH = 184;
 const COMPACT_HEIGHT = 54;
 const EXPANDED_WIDTH = 340;
 const EXPANDED_HEIGHT = 68;
@@ -52,6 +54,12 @@ export default function AppTabs() {
             <TabPill
               accessibilityLabel="Record"
               icon={{ android: 'mic', ios: 'mic.fill', web: 'mic' }}
+            />
+          </TabTrigger>
+          <TabTrigger name="account" href={'/account' as Href} asChild>
+            <TabPill
+              accessibilityLabel="Account"
+              icon={{ android: 'person', ios: 'person.fill', web: 'person' }}
             />
           </TabTrigger>
         </FloatingTabBar>
@@ -166,6 +174,8 @@ function TabPill({ accessibilityLabel, icon, isFocused, ...rest }: TabPillProps)
 }
 
 function RecordingControls() {
+  const router = useRouter();
+  const { isAuthenticated } = useAuth();
   const { cancel, elapsedSeconds, lastRecording, pause, resume, send, start, status, statusLabel } = useRecording();
   const pulse = useRef(new Animated.Value(0)).current;
   const isRecording = status === 'recording';
@@ -225,6 +235,15 @@ function RecordingControls() {
       ? { android: 'pause' as AndroidSymbol, ios: 'pause.fill' as SFSymbol, web: 'pause' as AndroidSymbol }
       : { android: 'play_arrow' as AndroidSymbol, ios: 'play.fill' as SFSymbol, web: 'play_arrow' as AndroidSymbol };
 
+  const handleSend = () => {
+    if (!isAuthenticated) {
+      router.push(buildAuthHref({ reason: 'recording-send', returnTo: '/record' }));
+      return;
+    }
+
+    send();
+  };
+
   return (
     <View style={styles.recordingRow}>
       <RoundButton
@@ -254,7 +273,7 @@ function RecordingControls() {
               ? { android: 'refresh', ios: 'arrow.clockwise', web: 'refresh' }
             : { android: 'send', ios: 'paperplane.fill', web: 'send' }
         }
-        onPress={send}
+        onPress={handleSend}
         danger={hasError}
         success={isSent}
       />

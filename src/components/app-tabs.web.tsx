@@ -1,4 +1,4 @@
-import { usePathname, type Href } from 'expo-router';
+import { usePathname, useRouter, type Href } from 'expo-router';
 import {
   TabList,
   TabListProps,
@@ -13,6 +13,8 @@ import { Animated, Easing, Pressable, StyleSheet, Text, View, type ViewStyle } f
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { Fonts } from '@/constants/theme';
+import { buildAuthHref } from '@/features/auth/auth-flow';
+import { useAuth } from '@/features/auth/auth-state';
 import { useRecording } from '@/features/recording/recording-state';
 
 const APPLE_ORANGE = '#ff965c';
@@ -20,7 +22,7 @@ const GLASS_FILTER = 'blur(22px) saturate(150%)';
 const SPACE = '#03050c';
 const TEXT = '#fff4e3';
 
-const COMPACT_WIDTH = 132;
+const COMPACT_WIDTH = 184;
 const COMPACT_HEIGHT = 54;
 const EXPANDED_WIDTH = 340;
 const EXPANDED_HEIGHT = 68;
@@ -45,6 +47,12 @@ export default function AppTabs() {
             <TabPill
               accessibilityLabel="Record"
               icon={{ android: 'mic', ios: 'mic.fill', web: 'mic' }}
+            />
+          </TabTrigger>
+          <TabTrigger name="account" href={'/account' as Href} asChild>
+            <TabPill
+              accessibilityLabel="Account"
+              icon={{ android: 'person', ios: 'person.fill', web: 'person' }}
             />
           </TabTrigger>
         </FloatingTabBar>
@@ -191,6 +199,8 @@ function TabPill({ accessibilityLabel, icon, isFocused, ...rest }: TabPillProps)
 }
 
 function RecordingControls() {
+  const router = useRouter();
+  const { isAuthenticated } = useAuth();
   const { cancel, elapsedSeconds, ingestError, lastRecording, pause, resume, send, start, status, statusLabel } =
     useRecording();
   const pulse = useRef(new Animated.Value(0)).current;
@@ -247,6 +257,15 @@ function RecordingControls() {
 
   const primaryLabel = isRecording ? 'Pause' : isPaused ? 'Resume' : hasError || isSent ? 'Record again' : 'Record';
 
+  const handleSend = () => {
+    if (!isAuthenticated) {
+      router.push(buildAuthHref({ reason: 'recording-send', returnTo: '/record' }));
+      return;
+    }
+
+    send();
+  };
+
   const primaryIcon: { android: AndroidSymbol; ios: SFSymbol; web: AndroidSymbol } = isSent
     ? { android: 'mic', ios: 'mic.fill', web: 'mic' }
     : isRecording
@@ -287,7 +306,7 @@ function RecordingControls() {
               ? { android: 'refresh', ios: 'arrow.clockwise', web: 'refresh' }
             : { android: 'send', ios: 'paperplane.fill', web: 'send' }
         }
-        onPress={send}
+        onPress={handleSend}
         danger={hasError}
         success={isSent}
       />

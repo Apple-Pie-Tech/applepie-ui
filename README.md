@@ -35,15 +35,21 @@ npm run test:playwright-ui
 
 ## Environment variables
 
-The UI now uses two optional env vars for the ingest handoff and one for the provisioning API:
+The app reads these Expo public env vars:
 
 ```bash
+EXPO_PUBLIC_SUPABASE_URL=
+EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY=
+EXPO_PUBLIC_REVENUECAT_IOS_API_KEY=
+EXPO_PUBLIC_REVENUECAT_ANDROID_API_KEY=
 EXPO_PUBLIC_INGEST_API_URL=https://misleading-dotty-trigub-tech-89f74bab.koyeb.app
 EXPO_PUBLIC_INGEST_API_KEY=
 EXPO_PUBLIC_PROVISION_API_URL=https://data-provision-api-trigub-tech-7a2fdbc9.koyeb.app
 ```
 
 Notes:
+- `EXPO_PUBLIC_SUPABASE_URL` and `EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY` are required for Supabase Auth.
+- `EXPO_PUBLIC_REVENUECAT_IOS_API_KEY` and `EXPO_PUBLIC_REVENUECAT_ANDROID_API_KEY` are required on native builds, RevenueCat stays a web no-op.
 - `EXPO_PUBLIC_INGEST_API_URL` defaults to the deployed ingestion app if omitted.
 - `EXPO_PUBLIC_INGEST_API_KEY` is only needed if ingest auth is later enforced.
 - `EXPO_PUBLIC_PROVISION_API_URL` defaults to the deployed data-provision API if omitted.

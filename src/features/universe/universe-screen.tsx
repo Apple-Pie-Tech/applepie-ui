@@ -1,4 +1,5 @@
-import { usePathname } from 'expo-router';
+import type { Href } from 'expo-router';
+import { useLocalSearchParams, usePathname, useRouter } from 'expo-router';
 import { SymbolView, type AndroidSymbol, type SFSymbol } from 'expo-symbols';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
@@ -17,6 +18,8 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { BottomTabInset, MaxContentWidth } from '@/constants/theme';
+import { buildAuthHref, buildUniverseReturnPath, readSearchParam } from '@/features/auth/auth-flow';
+import { useAuth } from '@/features/auth/auth-state';
 import { useRecording } from '@/features/recording/recording-state';
 import {
   createPodcast,
@@ -325,6 +328,9 @@ function isInWorldViewport(
 
 export function UniverseScreen({ mode = 'universe' }: { mode?: UniverseMode } = {}) {
   const insets = useSafeAreaInsets();
+  const router = useRouter();
+  const params = useLocalSearchParams<{ menu?: string | string[]; topicId?: string | string[] }>();
+  const { entitlementStatus, isAuthenticated, isBillingReady } = useAuth();
   const recording = useRecording();
   const webDockBottomOffset = Math.max(insets.bottom + 12, 22);
   const webDockHeight = recording.status === 'idle' ? 54 : 68;
@@ -355,6 +361,8 @@ export function UniverseScreen({ mode = 'universe' }: { mode?: UniverseMode } = 
   const isOnRoute =
     (mode === 'record' && pathname === '/record') || (mode === 'universe' && pathname === '/');
   const queryValue = normalize(query);
+  const pendingTopicId = readSearchParam(params.topicId);
+  const pendingMenu = readSearchParam(params.menu);
 
   const setCameraState = useCallback((next: Camera | ((current: Camera) => Camera)) => {
     const value = typeof next === 'function' ? next(cameraRef.current) : next;
@@ -596,7 +604,36 @@ export function UniverseScreen({ mode = 'universe' }: { mode?: UniverseMode } = 
   }, [dataVersion, queryValue]);
 
   const handlePodcastGenerate = useCallback(async () => {
-    if (!selectedLabel) {
+    if (!selectedLabel || !selected) {
+      return;
+    }
+
+    if (!isAuthenticated) {
+      router.push(
+        buildAuthHref({
+          reason: 'podcast-generate',
+          returnTo: buildUniverseReturnPath({
+            menu: 'generate',
+            topicId: selected.id,
+          }),
+        }),
+      );
+      return;
+    }
+
+    if (!isBillingReady) {
+      setPodcastErrorsByLabel((current) => ({
+        ...current,
+        [selectedLabel]: 'Checking your subscription…',
+      }));
+      return;
+    }
+
+    if (entitlementStatus !== 'entitled') {
+      setPodcastErrorsByLabel((current) => ({
+        ...current,
+        [selectedLabel]: 'Podcast generation requires an active subscription.',
+      }));
       return;
     }
 
@@ -626,7 +663,7 @@ export function UniverseScreen({ mode = 'universe' }: { mode?: UniverseMode } = 
     } finally {
       setPodcastPendingLabel((current) => (current === selectedLabel ? null : current));
     }
-  }, [selectedLabel]);
+  }, [entitlementStatus, isAuthenticated, isBillingReady, router, selected, selectedLabel]);
 
   const activeTopics = useMemo(() => {
     void dataVersion;
@@ -818,6 +855,35 @@ export function UniverseScreen({ mode = 'universe' }: { mode?: UniverseMode } = 
     },
     [openSelected],
   );
+
+  useEffect(() => {
+    if (isRecordMode || !isOnRoute || provisionState !== 'ready' || !layout.width || !layout.height) {
+      return;
+    }
+
+    if (!pendingTopicId && !pendingMenu) {
+      return;
+    }
+
+    const topic = pendingTopicId ? universeData.topicById[pendingTopicId] : null;
+
+    if (topic) {
+      openSelected({ kind: 'topic', id: topic.id, node: topic });
+      setMenuOpen(pendingMenu === 'generate');
+    }
+
+    router.replace('/' as Href);
+  }, [
+    isOnRoute,
+    isRecordMode,
+    layout.height,
+    layout.width,
+    openSelected,
+    pendingMenu,
+    pendingTopicId,
+    provisionState,
+    router,
+  ]);
 
   const panState = useRef({
     didMove: false,

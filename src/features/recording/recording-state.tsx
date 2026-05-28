@@ -13,6 +13,8 @@ import React, {
   useState,
 } from 'react';
 
+import { useAuth } from '@/features/auth/auth-state';
+
 import { IngestResult, submitRecordingToIngest } from './ingest-client';
 import {
   bootstrapRecordingCapability,
@@ -49,6 +51,7 @@ type RecordingContextValue = {
 const RecordingContext = createContext<RecordingContextValue | null>(null);
 
 export function RecordingProvider({ children }: { children: React.ReactNode }) {
+  const { isAuthenticated, user } = useAuth();
   const recorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
   const recorderState = useAudioRecorderState(recorder, 250);
 
@@ -205,6 +208,12 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
       return;
     }
 
+    const userId = user?.id?.trim();
+
+    if (!isAuthenticated || !userId) {
+      return;
+    }
+
     const finalElapsed = lastRecording?.durationSeconds ?? Math.floor((recorderState.durationMillis ?? 0) / 1000);
     setFrozenElapsed(finalElapsed);
     setErrorLabel(null);
@@ -226,7 +235,7 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
         setLastRecording(recording);
         retryReady = true;
 
-        const result = await submitRecordingToIngest(recording);
+        const result = await submitRecordingToIngest(recording, userId);
         setIngestResult(result);
         setStatus('sent');
 
@@ -245,7 +254,7 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
         console.warn('[recording] failed to send', err);
       }
     })();
-  }, [clearResetTimer, lastRecording, recorder, recorderState.durationMillis, status]);
+  }, [clearResetTimer, isAuthenticated, lastRecording, recorder, recorderState.durationMillis, status, user?.id]);
 
   const toggle = useCallback(() => {
     if (status === 'sending') {

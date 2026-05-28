@@ -55,6 +55,10 @@ type MockRouteStep =
       status: number;
     };
 
+type MockSupabaseAuthHandle = {
+  otpCalls: number;
+};
+
 test.describe('root shell static-web safety', () => {
   test('hydration / route stays safe for a direct dark-mode load', async ({ page }, testInfo) => {
     const finalizeDiagnostics = captureBrowserDiagnostics(page, testInfo);
@@ -194,15 +198,13 @@ test.describe('browser navigation parity', () => {
 test.describe('non-microphone universe verification', () => {
   test('web parity baseline / route shows mocked live universe state and podcast create/status progression', async ({ page }, testInfo) => {
     const finalizeDiagnostics = captureBrowserDiagnostics(page, testInfo);
+    await primeSignedInSession(page, '/', { entitled: true });
     const provisionApi = await mockProvisionApi(page, {
       detailSequence: [RUNNING_PODCAST, RUNNING_PODCAST, COMPLETED_PODCAST],
       initialPodcasts: [],
       universeResponse: LIVE_UNIVERSE_RESPONSE,
     });
 
-    await page.goto('/');
-
-    await expect(page.getByText('Loading live universe…')).toBeVisible();
     await expect(page.getByText('Loading live universe…')).toHaveCount(0, { timeout: 10_000 });
     await expect(page.getByText('Mocked outage. Showing preview map.')).toHaveCount(0);
     await expect(page.getByText('Tap a glow to enter a topic')).toBeVisible();
@@ -323,13 +325,12 @@ test.describe('universe interaction parity', () => {
 
   test('generation parity / podcast flow reaches ready state from the web action menu', async ({ page }, testInfo) => {
     const finalizeDiagnostics = captureBrowserDiagnostics(page, testInfo);
+    await primeSignedInSession(page, '/', { entitled: true });
     const provisionApi = await mockProvisionApi(page, {
       detailSequence: [RUNNING_PODCAST, COMPLETED_PODCAST],
       initialPodcasts: [],
       universeResponse: LIVE_UNIVERSE_RESPONSE,
     });
-
-    await page.goto('/');
 
     await expect(page.getByText('Loading live universe…')).toHaveCount(0, { timeout: 10_000 });
     await page.getByLabel('Search memories').click();
@@ -350,13 +351,12 @@ test.describe('universe interaction parity', () => {
 
   test('generation parity / podcast refresh failures stay explicit and recover on web', async ({ page }, testInfo) => {
     const finalizeDiagnostics = captureBrowserDiagnostics(page, testInfo);
+    await primeSignedInSession(page, '/', { entitled: true });
     await mockProvisionApi(page, {
       detailSequence: [{ abort: 'failed' }, COMPLETED_PODCAST],
       initialPodcasts: [],
       universeResponse: LIVE_UNIVERSE_RESPONSE,
     });
-
-    await page.goto('/');
 
     await expect(page.getByText('Loading live universe…')).toHaveCount(0, { timeout: 10_000 });
     await page.getByLabel('Search memories').click();
@@ -513,6 +513,7 @@ test.describe('recording capability verification', () => {
   test('ingest network /record route shows explicit retry-ready upload errors without breaking navigation', async ({ page }, testInfo) => {
     const finalizeDiagnostics = captureBrowserDiagnostics(page, testInfo);
     await mockBrowserRecording(page);
+    await primeSignedInSession(page, '/record');
     await mockProvisionApi(page, {
       initialPodcasts: [],
       universeResponse: LIVE_UNIVERSE_RESPONSE,
@@ -522,7 +523,6 @@ test.describe('recording capability verification', () => {
       await route.abort('failed');
     });
 
-    await page.goto('/record');
     await page.getByLabel('Start recording').click();
     await expect(page.getByLabel('Send recording')).toBeEnabled({ timeout: 10_000 });
 
@@ -549,13 +549,12 @@ test.describe('browser-safe record route parity', () => {
   test('record route parity /record supported browser flow keeps pause resume send and navigation usable', async ({ page }, testInfo) => {
     const finalizeDiagnostics = captureBrowserDiagnostics(page, testInfo);
     await mockBrowserRecording(page);
+    await primeSignedInSession(page, '/record');
     await mockProvisionApi(page, {
       initialPodcasts: [],
       universeResponse: LIVE_UNIVERSE_RESPONSE,
     });
     await mockIngestApi(page);
-
-    await page.goto('/record');
 
     await expect(page).toHaveURL(/\/record$/);
     await page.getByLabel('Start recording').click();
@@ -642,6 +641,7 @@ test.describe('browser-safe record route parity', () => {
   test('recording parity /record upload failure stays retry ready without stranding the route', async ({ page }, testInfo) => {
     const finalizeDiagnostics = captureBrowserDiagnostics(page, testInfo);
     await mockBrowserRecording(page);
+    await primeSignedInSession(page, '/record');
     await mockProvisionApi(page, {
       initialPodcasts: [],
       universeResponse: LIVE_UNIVERSE_RESPONSE,
@@ -651,7 +651,6 @@ test.describe('browser-safe record route parity', () => {
       await route.abort('failed');
     });
 
-    await page.goto('/record');
     await page.getByLabel('Start recording').click();
     await expect(page.getByLabel('Send recording')).toBeEnabled({ timeout: 10_000 });
 
@@ -670,6 +669,83 @@ test.describe('browser-safe record route parity', () => {
       allowedDiagnostics: [FAILED_RESOURCE_PATTERN, INGEST_REQUEST_PATTERN],
       requiredDiagnostics: [INGEST_REQUEST_PATTERN],
     });
+  });
+
+  test('podcast generation stays blocked while signed out and recovery returns to the generation menu', async ({ page }, testInfo) => {
+    const finalizeDiagnostics = captureBrowserDiagnostics(page, testInfo);
+    const auth = await mockSupabaseAuth(page);
+    const provisionApi = await mockProvisionApi(page, {
+      detailSequence: [RUNNING_PODCAST, COMPLETED_PODCAST],
+      initialPodcasts: [],
+      universeResponse: LIVE_UNIVERSE_RESPONSE,
+    });
+
+    await page.goto('/');
+
+    await expect(page.getByText('Loading live universe…')).toHaveCount(0, { timeout: 10_000 });
+    await page.getByLabel('Search memories').click();
+    await page.getByPlaceholder('Search places, people, feelings').fill('Mom');
+    await page.getByRole('button', { name: 'Open topic Mom from search' }).click();
+    await page.getByText('Generate something').click();
+
+    await clickGenerationAction(page, 'Podcast episode');
+
+    await expect(page).toHaveURL(/\/auth\?/);
+    await expect(page.getByText('Sign in to generate this podcast')).toBeVisible();
+    expect(provisionApi.createCalls).toBe(0);
+    const returnTo = readReturnToFromUrl(page.url());
+
+    await page.getByLabel('Email address').fill('mom@example.com');
+    await page.getByRole('button', { name: 'Email me a sign-in link' }).click();
+    await expect(page.getByText('Check your inbox for a sign-in link')).toBeVisible();
+    expect(auth.otpCalls).toBe(1);
+
+    await primeSignedInSession(page, returnTo, { entitled: true });
+
+    await expect(page).toHaveURL(/\/$/);
+    await expect(page.getByText('Podcast episode')).toBeVisible();
+    await clickGenerationAction(page, 'Podcast episode');
+
+    await expect(page.getByText('Submitting your podcast job…')).toBeVisible();
+    await expect(page.getByText('Podcast ready to revisit')).toBeVisible({ timeout: 10_000 });
+    expect(provisionApi.createCalls).toBe(1);
+
+    await finalizeDiagnostics({ failOnDiagnostics: true });
+  });
+
+  test('record send stays blocked while signed out and recovery returns to /record before upload', async ({ page }, testInfo) => {
+    const finalizeDiagnostics = captureBrowserDiagnostics(page, testInfo);
+    const auth = await mockSupabaseAuth(page);
+    await mockBrowserRecording(page);
+    await mockProvisionApi(page, {
+      initialPodcasts: [],
+      universeResponse: LIVE_UNIVERSE_RESPONSE,
+    });
+    const ingest = await mockIngestApi(page);
+
+    await page.goto('/record');
+    await page.getByLabel('Start recording').click();
+    await expect(page.getByLabel('Send recording')).toBeEnabled({ timeout: 10_000 });
+
+    await page.getByLabel('Send recording').click();
+
+    await expect(page).toHaveURL(/\/auth\?/);
+    await expect(page.getByText('Sign in to send this recording')).toBeVisible();
+    expect(ingest.calls).toBe(0);
+    const returnTo = readReturnToFromUrl(page.url());
+
+    await page.getByLabel('Email address').fill('record@example.com');
+    await page.getByRole('button', { name: 'Email me a sign-in link' }).click();
+    await expect(page.getByText('Check your inbox for a sign-in link')).toBeVisible();
+    expect(auth.otpCalls).toBe(1);
+
+    await primeSignedInSession(page, returnTo);
+
+    await expect(page).toHaveURL(/\/record$/);
+    await expect(page.getByLabel('Start recording')).toBeVisible();
+    expect(ingest.calls).toBe(0);
+
+    await finalizeDiagnostics({ failOnDiagnostics: true });
   });
 });
 
@@ -806,7 +882,10 @@ async function mockBrowserRecording(page: Page) {
 }
 
 async function mockIngestApi(page: Page) {
+  const calls = { calls: 0 };
+
   await page.route('**/ingest', async (route) => {
+    calls.calls += 1;
     await pause(250);
     await fulfillJson(route, 200, {
       audio_url: 'https://example.com/audio.webm',
@@ -815,6 +894,72 @@ async function mockIngestApi(page: Page) {
       status: 'processed',
     });
   });
+
+  return calls;
+}
+
+async function mockSupabaseAuth(page: Page): Promise<MockSupabaseAuthHandle> {
+  const calls: MockSupabaseAuthHandle = {
+    otpCalls: 0,
+  };
+
+  await page.route('**/auth/v1/otp**', async (route) => {
+    calls.otpCalls += 1;
+    await fulfillJson(route, 200, {
+      session: null,
+      user: null,
+    });
+  });
+
+  return calls;
+}
+
+async function primeSignedInSession(page: Page, returnTo: string, options?: { entitled?: boolean }) {
+  await page.addInitScript(({ entitlements, session }) => {
+    window.localStorage.setItem('applepie.test.activeEntitlements', JSON.stringify(entitlements));
+    window.localStorage.setItem('sb-example-auth-token', JSON.stringify(session));
+  }, {
+    entitlements: options?.entitled ? ['podcast_generation'] : [],
+    session: buildSupabaseSession(),
+  });
+
+  await page.goto(returnTo);
+}
+
+function readReturnToFromUrl(url: string) {
+  const value = new URL(url).searchParams.get('returnTo');
+
+  if (!value) {
+    throw new Error(`Missing returnTo query param in ${url}`);
+  }
+
+  return value;
+}
+
+function buildSupabaseSession() {
+  const user = {
+    app_metadata: { provider: 'email', providers: ['email'] },
+    aud: 'authenticated',
+    confirmation_sent_at: '2026-05-28T00:00:00.000Z',
+    confirmed_at: '2026-05-28T00:00:00.000Z',
+    created_at: '2026-05-28T00:00:00.000Z',
+    email: 'user@example.com',
+    id: 'user-123',
+    identities: [],
+    phone: '',
+    role: 'authenticated',
+    updated_at: '2026-05-28T00:00:00.000Z',
+    user_metadata: {},
+  };
+
+  return {
+    access_token: 'access-token',
+    expires_at: Math.floor(Date.now() / 1000) + 3600,
+    expires_in: 3600,
+    refresh_token: 'refresh-token',
+    token_type: 'bearer',
+    user,
+  };
 }
 
 function captureBrowserDiagnostics(page: Page, testInfo: TestInfo) {
@@ -999,13 +1144,10 @@ async function fulfillMockRoute(route: Route, step: MockRouteStep) {
 }
 
 async function clickGenerationAction(page: Page, label: string) {
-  const actionRow = page
-    .locator('div[tabindex="0"]')
-    .filter({ has: page.getByText(label, { exact: true }) })
-    .first();
+  const actionTitle = page.getByText(label, { exact: true }).first();
 
-  await expect(actionRow).toBeVisible();
-  await actionRow.click();
+  await expect(actionTitle).toBeVisible();
+  await actionTitle.click();
 }
 
 async function fulfillJson(route: Route, status: number, body: object) {
