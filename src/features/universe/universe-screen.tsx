@@ -16,7 +16,7 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { BottomTabInset } from '@/constants/theme';
+import { BottomTabInset, MaxContentWidth } from '@/constants/theme';
 import { useRecording } from '@/features/recording/recording-state';
 import {
   createPodcast,
@@ -62,6 +62,8 @@ const INITIAL_SCALE = 0.72;
 const MIN_SCALE = 0.54;
 const MAX_SCALE = 6.6;
 const WORLD_PADDING = 38;
+const RECORD_NODE_SIZE = 132;
+const WEB_OVERLAY_GUTTER = 12;
 const SPACE = '#03050c';
 const PANEL = 'rgba(8, 12, 23, 0.94)';
 const PANEL_SOFT = 'rgba(255, 246, 231, 0.07)';
@@ -162,10 +164,31 @@ function pointFor(camera: Camera, layout: Layout, node: { x: number; y: number }
   };
 }
 
-function recordTarget(layout: Layout) {
+function recordTarget(layout: Layout, bottomInset = 0) {
+  const preferredY = layout.height * (Platform.OS === 'web' ? 0.42 : 0.48);
+  const minCenterY = RECORD_NODE_SIZE / 2 + (Platform.OS === 'web' ? 20 : 0);
+  const maxCenterY =
+    layout.height - RECORD_NODE_SIZE / 2 - (Platform.OS === 'web' ? bottomInset + 12 : 0);
+
   return {
     x: layout.width / 2,
-    y: layout.height * 0.48,
+    y: clamp(preferredY, minCenterY, Math.max(minCenterY, maxCenterY)),
+  };
+}
+
+function panelFrame(layout: Layout) {
+  if (Platform.OS !== 'web') {
+    return {
+      left: 0,
+      width: layout.width,
+    };
+  }
+
+  const width = Math.max(0, Math.min(layout.width - WEB_OVERLAY_GUTTER * 2, MaxContentWidth));
+
+  return {
+    left: (layout.width - width) / 2,
+    width,
   };
 }
 
@@ -175,6 +198,7 @@ function morphNodeStyle({
   layout,
   morphProgress,
   point,
+  recordBottomInset = 0,
   startOpacity = 1,
 }: {
   endOpacity: number;
@@ -182,9 +206,10 @@ function morphNodeStyle({
   layout: Layout;
   morphProgress: Animated.Value;
   point: { x: number; y: number };
+  recordBottomInset?: number;
   startOpacity?: number;
 }) {
-  const target = recordTarget(layout);
+  const target = recordTarget(layout, recordBottomInset);
   const delay = 0.04 + Math.abs(Math.sin(point.x * 0.013 + point.y * 0.019)) * 0.18;
   const crashAt = Math.min(0.78, delay + 0.5);
   const midTransit = (delay + crashAt) / 2;
@@ -300,7 +325,11 @@ function isInWorldViewport(
 
 export function UniverseScreen({ mode = 'universe' }: { mode?: UniverseMode } = {}) {
   const insets = useSafeAreaInsets();
-  const navigationInset = (Platform.OS === 'web' ? 84 : BottomTabInset) + insets.bottom;
+  const recording = useRecording();
+  const webDockBottomOffset = Math.max(insets.bottom + 12, 22);
+  const webDockHeight = recording.status === 'idle' ? 54 : 68;
+  const navigationInset =
+    Platform.OS === 'web' ? webDockBottomOffset + webDockHeight : BottomTabInset + insets.bottom;
   const isRecordMode = mode === 'record';
   const [dataVersion, setDataVersion] = useState(0);
   const [layout, setLayout] = useState<Layout>({ width: 0, height: 0 });
@@ -507,6 +536,16 @@ export function UniverseScreen({ mode = 'universe' }: { mode?: UniverseMode } = 
         return;
       }
 
+      setPodcastErrorsByLabel((current) => {
+        const next = { ...current };
+        results.forEach((job) => {
+          if (job) {
+            delete next[job.label];
+          }
+        });
+        return next;
+      });
+
       setPodcastJobsByLabel((current) => {
         const next = { ...current };
         results.forEach((job) => {
@@ -539,6 +578,23 @@ export function UniverseScreen({ mode = 'universe' }: { mode?: UniverseMode } = 
         selectedPodcastJob?.status === 'running'),
   );
 
+  const searchResults = useMemo(() => {
+    void dataVersion;
+
+    if (!queryValue) {
+      return [] as TopicNode[];
+    }
+
+    return universeData.topics
+      .filter((topic) => matchesTopic(topic, queryValue))
+      .sort((a, b) => {
+        const scoreA = Number(normalize(a.label) === queryValue) * 1000 + a.storyCount;
+        const scoreB = Number(normalize(b.label) === queryValue) * 1000 + b.storyCount;
+        return scoreB - scoreA;
+      })
+      .slice(0, 8);
+  }, [dataVersion, queryValue]);
+
   const handlePodcastGenerate = useCallback(async () => {
     if (!selectedLabel) {
       return;
@@ -553,6 +609,11 @@ export function UniverseScreen({ mode = 'universe' }: { mode?: UniverseMode } = 
 
     try {
       const detail = await createPodcast(selectedLabel);
+      setPodcastErrorsByLabel((current) => {
+        const next = { ...current };
+        delete next[detail.label];
+        return next;
+      });
       setPodcastJobsByLabel((current) => ({
         ...current,
         [detail.label]: detail,
@@ -744,6 +805,18 @@ export function UniverseScreen({ mode = 'universe' }: { mode?: UniverseMode } = 
       zoomToTopic(hit.node);
     },
     [zoomToTopic],
+  );
+
+  const selectTopic = useCallback(
+    (topic: TopicNode, options?: { closeSearch?: boolean }) => {
+      if (options?.closeSearch) {
+        setSearchOpen(false);
+        setQuery('');
+      }
+
+      openSelected({ kind: 'topic', id: topic.id, node: topic });
+    },
+    [openSelected],
   );
 
   const panState = useRef({
@@ -997,6 +1070,7 @@ export function UniverseScreen({ mode = 'universe' }: { mode?: UniverseMode } = 
   }, [activeTopics, camera, dataVersion, isRecordMode, layout, queryValue]);
 
   const hint = camera.scale < 1 ? 'Drag to swim through your life graph' : camera.scale < 2.6 ? 'Tap a glow to enter a topic' : 'Long-press a node to generate';
+  const recordTargetPoint = useMemo(() => recordTarget(layout, navigationInset), [layout, navigationInset]);
 
   return (
     <View style={styles.container} onLayout={handleLayout}>
@@ -1013,14 +1087,26 @@ export function UniverseScreen({ mode = 'universe' }: { mode?: UniverseMode } = 
             layout={layout}
             morphProgress={morphProgress}
             query={queryValue}
+            recordBottomInset={navigationInset}
             recordMode={isRecordMode}
           />
         )}
       </View>
 
-      <View pointerEvents="none" style={StyleSheet.absoluteFill}>
+      <View pointerEvents={Platform.OS === 'web' ? 'box-none' : 'none'} style={StyleSheet.absoluteFill}>
         {topicLabels.map((label) => (
-          <TopicLabel key={label.id} {...label} />
+          <TopicLabel
+            key={label.id}
+            {...label}
+            interactive={Platform.OS === 'web'}
+            onPress={() => {
+              const topic = universeData.topicById[label.id];
+
+              if (topic) {
+                selectTopic(topic);
+              }
+            }}
+          />
         ))}
       </View>
 
@@ -1028,25 +1114,56 @@ export function UniverseScreen({ mode = 'universe' }: { mode?: UniverseMode } = 
         {!isRecordMode && (
         <View pointerEvents="box-none" style={[styles.topChrome, { top: insets.top + 14 }]}>
           {searchOpen ? (
-            <View style={styles.searchPanel}>
-              <SymbolIcon android="search" ios="magnifyingglass" web="search" size={15} color={TEXT} />
-              <TextInput
-                autoFocus
-                placeholder="Search places, people, feelings"
-                placeholderTextColor="rgba(255, 244, 227, 0.42)"
-                value={query}
-                onChangeText={setQuery}
-                style={styles.searchInput}
-              />
-              <Pressable
-                accessibilityLabel="Close search"
-                hitSlop={10}
-                onPress={() => {
-                  setSearchOpen(false);
-                  setQuery('');
-                }}>
-                <SymbolIcon android="close" ios="xmark" web="close" size={13} color={TEXT} />
-              </Pressable>
+            <View style={styles.searchStack}>
+              <View style={styles.searchPanel}>
+                <SymbolIcon android="search" ios="magnifyingglass" web="search" size={15} color={TEXT} />
+                <TextInput
+                  autoFocus
+                  placeholder="Search places, people, feelings"
+                  placeholderTextColor="rgba(255, 244, 227, 0.42)"
+                  value={query}
+                  onChangeText={setQuery}
+                  style={styles.searchInput}
+                />
+                <Pressable
+                  accessibilityLabel="Close search"
+                  hitSlop={10}
+                  onPress={() => {
+                    setSearchOpen(false);
+                    setQuery('');
+                  }}>
+                  <SymbolIcon android="close" ios="xmark" web="close" size={13} color={TEXT} />
+                </Pressable>
+              </View>
+              {queryValue ? (
+                <View style={styles.searchResults}>
+                  {searchResults.length > 0 ? (
+                    searchResults.map((topic) => (
+                      <Pressable
+                        accessibilityLabel={`Open topic ${topic.label} from search`}
+                        accessibilityRole="button"
+                        key={topic.id}
+                        onPress={() => selectTopic(topic, { closeSearch: true })}
+                        style={({ pressed }) => [styles.searchResultRow, pressed && styles.pressed]}>
+                        <View style={styles.searchResultTextWrap}>
+                          <Text numberOfLines={1} style={styles.searchResultTitle}>
+                            {topic.label}
+                          </Text>
+                          <Text style={styles.searchResultMeta}>
+                            {categoryLabel(topic.category)} / {topic.storyCount} stories
+                          </Text>
+                        </View>
+                        <View style={styles.pickPill}>
+                          <SymbolIcon android="arrow_forward" ios="arrow.right" web="arrow_forward" size={8} color={APPLE_ORANGE} />
+                          <Text style={styles.pickText}>Open</Text>
+                        </View>
+                      </Pressable>
+                    ))
+                  ) : (
+                    <Text style={styles.searchResultEmpty}>No matching topics yet</Text>
+                  )}
+                </View>
+              ) : null}
             </View>
           ) : (
             <>
@@ -1099,7 +1216,7 @@ export function UniverseScreen({ mode = 'universe' }: { mode?: UniverseMode } = 
           </View>
         )}
 
-        <RecordNodeOverlay active={isRecordMode} layout={layout} morphProgress={morphProgress} />
+        <RecordNodeOverlay active={isRecordMode} layout={layout} morphProgress={morphProgress} target={recordTargetPoint} />
       </View>
 
       {!isRecordMode && selected && !menuOpen && (
@@ -1111,11 +1228,7 @@ export function UniverseScreen({ mode = 'universe' }: { mode?: UniverseMode } = 
             setMenuOpen(false);
           }}
           onGenerate={() => setMenuOpen(true)}
-          onTopicPress={(topic) => {
-            const hit: SelectedNode = { kind: 'topic', id: topic.id, node: topic };
-            setSelected(hit);
-            zoomToTopic(topic);
-          }}
+          onTopicPress={(topic) => selectTopic(topic)}
           selected={selected}
         />
       )}
@@ -1123,6 +1236,7 @@ export function UniverseScreen({ mode = 'universe' }: { mode?: UniverseMode } = 
       {!isRecordMode && selected && menuOpen && (
         <ActionMenu
           bottomInset={navigationInset}
+          layout={layout}
           onClose={() => setMenuOpen(false)}
           onPodcastGenerate={handlePodcastGenerate}
           podcastError={selectedPodcastError}
@@ -1143,6 +1257,7 @@ function GraphLayer({
   layout,
   morphProgress,
   query,
+  recordBottomInset,
   recordMode,
 }: {
   activeStories: Set<string>;
@@ -1152,6 +1267,7 @@ function GraphLayer({
   layout: Layout;
   morphProgress: Animated.Value;
   query: string;
+  recordBottomInset: number;
   recordMode: boolean;
 }) {
   void dataVersion;
@@ -1222,6 +1338,7 @@ function GraphLayer({
           dimmed={Boolean(query) && !matchesTopic(topic, query)}
           layout={layout}
           morphProgress={morphProgress}
+          recordBottomInset={recordBottomInset}
           recordMode={recordMode}
           topic={topic}
         />
@@ -1388,6 +1505,7 @@ function TopicCluster({
   dimmed,
   layout,
   morphProgress,
+  recordBottomInset,
   recordMode,
   topic,
 }: {
@@ -1396,6 +1514,7 @@ function TopicCluster({
   dimmed: boolean;
   layout: Layout;
   morphProgress: Animated.Value;
+  recordBottomInset: number;
   recordMode: boolean;
   topic: TopicNode;
 }) {
@@ -1451,6 +1570,7 @@ function TopicCluster({
             layout,
             morphProgress,
             point,
+            recordBottomInset,
             startOpacity: dimmed ? 0.18 : 1,
           }),
           {
@@ -1483,21 +1603,38 @@ function TopicCluster({
 
 function TopicLabel({
   count,
+  interactive = false,
   label,
+  onPress,
   opacity,
   width,
   x,
   y,
 }: {
   count: number;
+  interactive?: boolean;
   label: string;
+  onPress?: () => void;
   opacity: number;
   width: number;
   x: number;
   y: number;
 }) {
+  const style = [styles.topicLabel, interactive && styles.topicLabelInteractive, { left: x - width / 2, opacity, top: y, width }];
+
+  if (interactive && onPress) {
+    return (
+      <Pressable accessibilityLabel={`Open topic ${label}`} accessibilityRole="button" onPress={onPress} style={({ pressed }) => [style, pressed && styles.pressed]}>
+        <Text numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.72} style={styles.topicLabelText}>
+          {label}
+        </Text>
+        <Text style={styles.topicLabelMeta}>{count} stories</Text>
+      </Pressable>
+    );
+  }
+
   return (
-    <View style={[styles.topicLabel, { left: x - width / 2, opacity, top: y, width }]}>
+    <View style={style}>
       <Text numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.72} style={styles.topicLabelText}>
         {label}
       </Text>
@@ -1510,10 +1647,12 @@ function RecordNodeOverlay({
   active,
   layout,
   morphProgress,
+  target,
 }: {
   active: boolean;
   layout: Layout;
   morphProgress: Animated.Value;
+  target: { x: number; y: number };
 }) {
   const { status, statusLabel, toggle } = useRecording();
   const pulse = useRef(new Animated.Value(0)).current;
@@ -1551,12 +1690,10 @@ function RecordNodeOverlay({
     return () => loop.stop();
   }, [active, pulse, recording]);
 
-  if (!layout.width || !layout.height) {
+  if (!target.x || !target.y) {
     return null;
   }
 
-  const target = recordTarget(layout);
-  const size = 132;
   const opacity = morphProgress.interpolate({
     inputRange: [0, 0.32, 0.78, 1],
     outputRange: [0, 0.42, 0.92, 1],
@@ -1582,9 +1719,9 @@ function RecordNodeOverlay({
       style={[
         styles.recordNodeWrap,
         {
-          left: target.x - size / 2,
+          left: target.x - RECORD_NODE_SIZE / 2,
           opacity,
-          top: target.y - size / 2,
+          top: target.y - RECORD_NODE_SIZE / 2,
           transform: [{ scale }],
         },
       ]}>
@@ -1672,18 +1809,18 @@ function StarStream({
   return (
     <View pointerEvents="none" style={StyleSheet.absoluteFill}>
       {Array.from({ length: 8 }, (_, index) => (
-        <StarParticle key={index} index={index} layout={layout} target={target} />
+        <StarParticle delayIndex={index} key={index} layout={layout} target={target} />
       ))}
     </View>
   );
 }
 
 function StarParticle({
-  index,
+  delayIndex,
   layout,
   target,
 }: {
-  index: number;
+  delayIndex: number;
   layout: Layout;
   target: { x: number; y: number };
 }) {
@@ -1691,7 +1828,7 @@ function StarParticle({
   const { height, width } = layout;
   const targetX = target.x;
   const targetY = target.y;
-  const [seed, setSeed] = useState(() => makeStarSeed(index, layout, target));
+  const [seed, setSeed] = useState(() => makeStarSeed(layout, target));
 
   useEffect(() => {
     let mounted = true;
@@ -1702,7 +1839,7 @@ function StarParticle({
         return;
       }
 
-      setSeed(makeStarSeed(index, { height, width }, { x: targetX, y: targetY }));
+      setSeed(makeStarSeed({ height, width }, { x: targetX, y: targetY }));
       progress.setValue(0);
       Animated.timing(progress, {
         toValue: 1,
@@ -1716,7 +1853,7 @@ function StarParticle({
       });
     };
 
-    timeout = setTimeout(fire, index * 220);
+    timeout = setTimeout(fire, delayIndex * 220);
 
     return () => {
       mounted = false;
@@ -1725,7 +1862,7 @@ function StarParticle({
       }
       progress.stopAnimation();
     };
-  }, [height, index, progress, targetX, targetY, width]);
+  }, [delayIndex, height, progress, targetX, targetY, width]);
 
   const translateX = progress.interpolate({
     inputRange: [0, 1],
@@ -1762,11 +1899,7 @@ function StarParticle({
   );
 }
 
-function makeStarSeed(
-  index: number,
-  layout: Layout,
-  target: { x: number; y: number },
-) {
+function makeStarSeed(layout: Layout, target: { x: number; y: number }) {
   const angle = Math.random() * Math.PI * 2;
   const span = Math.max(layout.width, layout.height);
   const distance = span * (0.4 + Math.random() * 0.32);
@@ -1803,9 +1936,20 @@ function NodeSheet({
     .filter(Boolean)
     .slice(0, 8);
   const maxHeight = Math.max(320, (layout.height - bottomInset) * 0.58);
+  const frame = panelFrame(layout);
 
   return (
-    <View style={[styles.sheet, { bottom: bottomInset, maxHeight }]}>
+    <View
+      style={[
+        styles.sheet,
+        {
+          bottom: bottomInset,
+          left: frame.left,
+          maxHeight,
+          right: Platform.OS === 'web' ? undefined : 0,
+          width: frame.width,
+        },
+      ]}>
       <View style={styles.sheetHandle} />
       <View style={styles.sheetHeader}>
         <View style={styles.sheetBadge}>
@@ -1879,6 +2023,7 @@ function NodeSheet({
 
 function ActionMenu({
   bottomInset,
+  layout,
   onClose,
   onPodcastGenerate,
   podcastError,
@@ -1887,6 +2032,7 @@ function ActionMenu({
   selected,
 }: {
   bottomInset: number;
+  layout: Layout;
   onClose: () => void;
   onPodcastGenerate: () => void;
   podcastError: string | null;
@@ -1916,11 +2062,21 @@ function ActionMenu({
             : podcastJob?.status === 'pending'
               ? 'Queued for generation'
               : 'Narrated in your voice';
+  const frame = panelFrame(layout);
 
   return (
     <View style={styles.menuOverlay}>
       <Pressable style={StyleSheet.absoluteFill} onPress={onClose} />
-      <View style={[styles.menuSheet, { bottom: bottomInset }]}>
+      <View
+        style={[
+          styles.menuSheet,
+          {
+            bottom: bottomInset,
+            left: frame.left,
+            right: Platform.OS === 'web' ? undefined : 0,
+            width: frame.width,
+          },
+        ]}>
         <View style={styles.sheetHandle} />
         <View style={styles.menuHeader}>
           <View style={styles.sheetBadge}>
@@ -2391,6 +2547,59 @@ const styles = StyleSheet.create({
     paddingHorizontal: 13,
     width: '86%',
   },
+  searchResultEmpty: {
+    color: MUTED,
+    fontFamily: bodyFont,
+    fontSize: 12,
+    lineHeight: 16,
+  },
+  searchResultMeta: {
+    color: MUTED,
+    fontFamily: monoFont,
+    fontSize: 9,
+    fontWeight: '800',
+    letterSpacing: 0.7,
+    lineHeight: 12,
+    marginTop: 4,
+    textTransform: 'uppercase',
+  },
+  searchResultRow: {
+    alignItems: 'center',
+    backgroundColor: 'rgba(255, 244, 227, 0.055)',
+    borderColor: 'rgba(255, 244, 227, 0.1)',
+    borderRadius: 14,
+    borderWidth: 1,
+    flexDirection: 'row',
+    gap: 12,
+    justifyContent: 'space-between',
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+  },
+  searchResults: {
+    alignSelf: 'center',
+    backgroundColor: 'rgba(8, 12, 23, 0.9)',
+    borderColor: 'rgba(255, 244, 227, 0.1)',
+    borderRadius: 18,
+    borderWidth: 1,
+    gap: 8,
+    maxWidth: 420,
+    padding: 10,
+    width: '86%',
+  },
+  searchResultTextWrap: {
+    flex: 1,
+    minWidth: 0,
+  },
+  searchResultTitle: {
+    color: TEXT,
+    fontFamily: displayFont,
+    fontSize: 14,
+    fontWeight: '800',
+    lineHeight: 18,
+  },
+  searchStack: {
+    gap: 10,
+  },
   sectionLabel: {
     color: 'rgba(255, 244, 227, 0.48)',
     fontFamily: monoFont,
@@ -2578,6 +2787,11 @@ const styles = StyleSheet.create({
   topicLabel: {
     alignItems: 'center',
     position: 'absolute',
+  },
+  topicLabelInteractive: {
+    borderRadius: 12,
+    paddingHorizontal: 4,
+    paddingVertical: 2,
   },
   topicLabelMeta: {
     color: 'rgba(255, 244, 227, 0.5)',

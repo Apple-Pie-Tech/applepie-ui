@@ -1,4 +1,5 @@
 import { fetch } from 'expo/fetch';
+import { Platform } from 'react-native';
 
 import { getProvisionEndpoint } from '@/constants/provision';
 
@@ -95,7 +96,14 @@ export async function fetchPodcasts(): Promise<ProvisionPodcastListItem[]> {
 }
 
 async function requestJson(input: string, init?: RequestInit): Promise<unknown> {
-  const response = await fetch(input, init);
+  let response: Response;
+
+  try {
+    response = await fetch(input, init);
+  } catch (error) {
+    throw toProvisionRequestError(error);
+  }
+
   const text = await response.text();
   const payload = parseJsonValue(text);
 
@@ -104,6 +112,22 @@ async function requestJson(input: string, init?: RequestInit): Promise<unknown> 
   }
 
   return payload;
+}
+
+function toProvisionRequestError(error: unknown) {
+  if (looksLikeNetworkRequestError(error)) {
+    return new Error(
+      Platform.OS === 'web'
+        ? 'Provision API is unreachable from this browser. Check CORS, network access, or whether the service is down.'
+        : 'Provision API request failed before a response was received.',
+    );
+  }
+
+  if (error instanceof Error) {
+    return error;
+  }
+
+  return new Error('Provision API request failed before a response was received.');
 }
 
 function parsePodcastDetail(payload: unknown): ProvisionPodcastDetail {
@@ -165,6 +189,23 @@ function getErrorMessage(payload: unknown, statusCode: number) {
   }
 
   return `Provision API request failed (${statusCode})`;
+}
+
+function looksLikeNetworkRequestError(error: unknown) {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+
+  const signature = `${error.name} ${error.message}`.toLowerCase();
+
+  return (
+    signature.includes('failed to fetch') ||
+    signature.includes('load failed') ||
+    signature.includes('network request failed') ||
+    signature.includes('networkerror') ||
+    signature.includes('err_failed') ||
+    signature.includes('cors')
+  );
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
