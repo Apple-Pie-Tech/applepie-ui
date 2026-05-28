@@ -44,10 +44,10 @@ export const Fonts = Platform.select({
     mono: 'monospace',
   },
   web: {
-    sans: 'var(--font-display)',
-    serif: 'var(--font-serif)',
-    rounded: 'var(--font-rounded)',
-    mono: 'var(--font-mono)',
+    sans: 'var(--font-display, system-ui, sans-serif)',
+    serif: 'var(--font-serif, Georgia, serif)',
+    rounded: 'var(--font-rounded, system-ui, sans-serif)',
+    mono: 'var(--font-mono, ui-monospace, monospace)',
   },
 });
 
