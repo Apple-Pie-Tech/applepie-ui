@@ -1,7 +1,5 @@
 import {
-  AudioModule,
   RecordingPresets,
-  setAudioModeAsync,
   useAudioRecorder,
   useAudioRecorderState,
 } from 'expo-audio';
@@ -16,6 +14,13 @@ import React, {
 } from 'react';
 
 import { IngestResult, submitRecordingToIngest } from './ingest-client';
+import {
+  bootstrapRecordingCapability,
+  ensureRecordingCanStart,
+  getFinalizedRecordingUri,
+  getRecordingCapabilityError,
+  toRecordingCapabilityError,
+} from './recording-capability';
 
 export type RecordingStatus = 'idle' | 'recording' | 'paused' | 'sending' | 'sent' | 'error';
 
@@ -53,24 +58,28 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
   const [ingestResult, setIngestResult] = useState<IngestResult | null>(null);
   const [permissionGranted, setPermissionGranted] = useState(false);
   const [frozenElapsed, setFrozenElapsed] = useState<number | null>(null);
+  const [errorLabel, setErrorLabel] = useState<string | null>(null);
   const resetTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const surfaceRecordingError = useCallback((error: Error, fallbackLabel: string) => {
+    setPermissionGranted(false);
+    setErrorLabel(error instanceof Error && 'statusLabel' in error ? String(error.statusLabel) : fallbackLabel);
+    setIngestError(error.message);
+    setStatus('error');
+  }, []);
 
   useEffect(() => {
     let mounted = true;
 
     (async () => {
       try {
-        const result = await AudioModule.requestRecordingPermissionsAsync();
+        const result = await bootstrapRecordingCapability();
         if (!mounted) {
           return;
         }
-        setPermissionGranted(result.granted);
 
-        if (result.granted) {
-          await setAudioModeAsync({
-            allowsRecording: true,
-            playsInSilentMode: true,
-          });
+        if (typeof result.permissionGranted === 'boolean') {
+          setPermissionGranted(result.permissionGranted);
         }
       } catch (err) {
         console.warn('[recording] permission/audio mode setup failed', err);
@@ -92,40 +101,62 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
   const start = useCallback(() => {
     clearResetTimer();
     setFrozenElapsed(null);
+    setErrorLabel(null);
     setIngestError(null);
     setIngestResult(null);
     setLastRecording(null);
 
     (async () => {
       try {
-        if (!permissionGranted) {
-          const result = await AudioModule.requestRecordingPermissionsAsync();
-          setPermissionGranted(result.granted);
+        const capability = await ensureRecordingCanStart({ permissionGranted });
+        if (capability.kind !== 'supported') {
+          surfaceRecordingError(toRecordingCapabilityError(capability), capability.statusLabel);
+          return;
+        }
 
-          if (!result.granted) {
-            return;
-          }
-
-          await setAudioModeAsync({ allowsRecording: true, playsInSilentMode: true });
+        if (typeof capability.permissionGranted === 'boolean') {
+          setPermissionGranted(capability.permissionGranted);
         }
 
         await recorder.prepareToRecordAsync();
         recorder.record();
+        setPermissionGranted(true);
         setStatus('recording');
       } catch (err) {
+        const capabilityError = getRecordingCapabilityError(err);
+        if (capabilityError) {
+          surfaceRecordingError(capabilityError, capabilityError.statusLabel);
+          return;
+        }
+
+        const message = err instanceof Error ? err.message : 'Recording failed to start';
+        setPermissionGranted(false);
+        setErrorLabel('Recording error');
+        setIngestError(message);
+        setStatus('error');
         console.warn('[recording] failed to start', err);
       }
     })();
-  }, [clearResetTimer, permissionGranted, recorder]);
+  }, [clearResetTimer, permissionGranted, recorder, surfaceRecordingError]);
 
   const pause = useCallback(() => {
     try {
       recorder.pause();
       setStatus('paused');
     } catch (err) {
+      const capabilityError = getRecordingCapabilityError(err);
+      if (capabilityError) {
+        surfaceRecordingError(capabilityError, capabilityError.statusLabel);
+        return;
+      }
+
+      const message = err instanceof Error ? err.message : 'Recording failed to pause';
+      setErrorLabel('Recording error');
+      setIngestError(message);
+      setStatus('error');
       console.warn('[recording] failed to pause', err);
     }
-  }, [recorder]);
+  }, [recorder, surfaceRecordingError]);
 
   const resume = useCallback(() => {
     clearResetTimer();
@@ -133,13 +164,24 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
       recorder.record();
       setStatus('recording');
     } catch (err) {
+      const capabilityError = getRecordingCapabilityError(err);
+      if (capabilityError) {
+        surfaceRecordingError(capabilityError, capabilityError.statusLabel);
+        return;
+      }
+
+      const message = err instanceof Error ? err.message : 'Recording failed to resume';
+      setErrorLabel('Recording error');
+      setIngestError(message);
+      setStatus('error');
       console.warn('[recording] failed to resume', err);
     }
-  }, [clearResetTimer, recorder]);
+  }, [clearResetTimer, recorder, surfaceRecordingError]);
 
   const cancel = useCallback(() => {
     clearResetTimer();
     setFrozenElapsed(null);
+    setErrorLabel(null);
     setIngestError(null);
     setIngestResult(null);
     setLastRecording(null);
@@ -165,11 +207,14 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
 
     const finalElapsed = lastRecording?.durationSeconds ?? Math.floor((recorderState.durationMillis ?? 0) / 1000);
     setFrozenElapsed(finalElapsed);
+    setErrorLabel(null);
     setIngestError(null);
     setIngestResult(null);
     setStatus('sending');
 
     (async () => {
+      let retryReady = canRetry;
+
       try {
         const recording = canRetry
           ? lastRecording
@@ -179,6 +224,7 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
             });
 
         setLastRecording(recording);
+        retryReady = true;
 
         const result = await submitRecordingToIngest(recording);
         setIngestResult(result);
@@ -187,11 +233,14 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
         resetTimerRef.current = setTimeout(() => {
           setStatus('idle');
           setFrozenElapsed(null);
+          setErrorLabel(null);
           resetTimerRef.current = null;
         }, 1400);
       } catch (err) {
+        const capabilityError = getRecordingCapabilityError(err);
         const message = err instanceof Error ? err.message : 'Upload failed';
         setIngestError(message);
+        setErrorLabel(capabilityError?.statusLabel ?? (retryReady ? null : 'Recording error'));
         setStatus('error');
         console.warn('[recording] failed to send', err);
       }
@@ -237,7 +286,7 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
       : status === 'sent'
         ? 'Saved'
         : status === 'error'
-          ? 'Retry ready'
+          ? errorLabel ?? 'Retry ready'
           : null;
 
   const value = useMemo(
@@ -294,11 +343,7 @@ async function finalizeRecording({
   recorder: ReturnType<typeof useAudioRecorder>;
 }): Promise<RecordingResult> {
   await recorder.stop();
-  const uri = recorder.uri;
-
-  if (!uri) {
-    throw new Error('Recording file unavailable');
-  }
+  const uri = getFinalizedRecordingUri(recorder.uri);
 
   return {
     createdAt: Date.now(),

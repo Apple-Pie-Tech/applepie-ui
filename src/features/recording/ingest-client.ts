@@ -1,9 +1,10 @@
 import * as Device from 'expo-device';
 import { fetch } from 'expo/fetch';
-import { File } from 'expo-file-system';
 import { Platform } from 'react-native';
 
 import { getIngestEndpoint, ingestApiKey } from '@/constants/ingest';
+
+import { createRecordingUploadAudioBody } from './recording-capability';
 
 export type IngestResult = {
   audio_url?: string;
@@ -21,7 +22,7 @@ export type RecordingUpload = {
 export async function submitRecordingToIngest(recording: RecordingUpload): Promise<IngestResult> {
   const endpoint = getIngestEndpoint();
   const formData = new FormData();
-  const file = new File(recording.uri);
+  const file = await createRecordingUploadAudioBody(recording.uri);
 
   formData.append(
     'metadata',
@@ -34,11 +35,17 @@ export async function submitRecordingToIngest(recording: RecordingUpload): Promi
   formData.append('audio', file, getRecordingFilename(recording));
 
   const headers = ingestApiKey ? { 'x-api-key': ingestApiKey } : undefined;
-  const response = await fetch(endpoint, {
-    body: formData,
-    headers,
-    method: 'POST',
-  });
+  let response: Response;
+
+  try {
+    response = await fetch(endpoint, {
+      body: formData,
+      headers,
+      method: 'POST',
+    });
+  } catch (error) {
+    throw toIngestRequestError(error);
+  }
 
   const payload = await readJson(response);
   if (!response.ok) {
@@ -60,6 +67,22 @@ function getRecordingFilename(recording: RecordingUpload) {
   }
 
   return `memory-${recording.createdAt}.m4a`;
+}
+
+function toIngestRequestError(error: unknown) {
+  if (looksLikeNetworkRequestError(error)) {
+    return new Error(
+      Platform.OS === 'web'
+        ? 'Upload could not reach the ingest service from this browser. Check CORS, network access, or whether the service is down.'
+        : 'Upload failed before the ingest service responded.',
+    );
+  }
+
+  if (error instanceof Error) {
+    return error;
+  }
+
+  return new Error('Upload failed before the ingest service responded.');
 }
 
 function getLocalUserId() {
@@ -89,6 +112,23 @@ function getErrorMessage(payload: Record<string, unknown> | null, statusCode: nu
   }
 
   return `Upload failed (${statusCode})`;
+}
+
+function looksLikeNetworkRequestError(error: unknown) {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+
+  const signature = `${error.name} ${error.message}`.toLowerCase();
+
+  return (
+    signature.includes('failed to fetch') ||
+    signature.includes('load failed') ||
+    signature.includes('network request failed') ||
+    signature.includes('networkerror') ||
+    signature.includes('err_failed') ||
+    signature.includes('cors')
+  );
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
