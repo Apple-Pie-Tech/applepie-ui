@@ -68,3 +68,4 @@
 - Non-Playwright verification remains `npm run lint`, `npm run typecheck`, and `npm run export:web`; the README keeps those commands unchanged.
 
 - Android native build root cause (2026-05-28): the checked-in Gradle wrapper was pinned to `gradle-9.0.0-bin.zip`, which triggered the `JvmVendorSpec IBM_SEMERU` incompatibility during native build startup. Downgrading only `android/gradle/wrapper/gradle-wrapper.properties` to `gradle-8.14.4-bin.zip` was sufficient; `./gradlew assembleDebug` in `android/` completed successfully afterward.
+- Current billing state (2026-05-29): RevenueCat is present and wired for native bootstrap, auth-linked customer sync, restore purchases, and entitlement gating, but there is still no in-app purchase or offerings UI. In other words, the app can recognize and restore an existing subscription, yet it cannot sell a subscription from inside the app yet.
