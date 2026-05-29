@@ -3,17 +3,24 @@ import type { CustomerInfo } from 'react-native-purchases';
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 
 import { addRevenueCatCustomerInfoUpdateListener, getRevenueCatEntitlementState, syncRevenueCatCustomerInfo } from '@/lib/revenuecat';
-import { getSupabaseAuthState, supabase } from '@/lib/supabase';
+import { getSupabaseAuthState, getSupabaseDisplayName, supabase, updateSupabaseDisplayName } from '@/lib/supabase';
 
 export type EntitlementStatus = 'unknown' | 'signed-out' | 'not-entitled' | 'entitled';
 
+type EditableProfile = {
+  displayName: string | null;
+};
+
 type AuthContextValue = {
   activeEntitlements: string[];
+  displayName: string | null;
   entitlementStatus: EntitlementStatus;
   isAuthenticated: boolean;
   isBillingReady: boolean;
+  profile: EditableProfile;
   session: Session | null;
   signOut: () => Promise<void>;
+  updateDisplayName: (displayName: string) => Promise<void>;
   user: User | null;
 };
 
@@ -29,6 +36,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const user = session?.user ?? null;
   const authState = useMemo(() => getSupabaseAuthState(session), [session]);
+  const displayName = useMemo(() => getSupabaseDisplayName(user), [user]);
+  const profile = useMemo(
+    () => ({
+      displayName,
+    }),
+    [displayName],
+  );
   const authStateRef = useRef(authState);
   authStateRef.current = authState;
 
@@ -50,6 +64,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     if (error) {
       throw error;
     }
+  }, []);
+
+  const updateDisplayName = useCallback(async (nextDisplayName: string) => {
+    await updateSupabaseDisplayName(nextDisplayName);
   }, []);
 
   useEffect(() => {
@@ -162,14 +180,28 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const value = useMemo(
     () => ({
       activeEntitlements,
+      displayName,
       entitlementStatus,
       isAuthenticated: authState.isSignedIn,
       isBillingReady,
+      profile,
       session,
       signOut,
+      updateDisplayName,
       user,
     }),
-    [activeEntitlements, authState.isSignedIn, entitlementStatus, isBillingReady, session, signOut, user],
+    [
+      activeEntitlements,
+      authState.isSignedIn,
+      displayName,
+      entitlementStatus,
+      isBillingReady,
+      profile,
+      session,
+      signOut,
+      updateDisplayName,
+      user,
+    ],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

@@ -1,6 +1,6 @@
 import type { Href } from 'expo-router';
 import { useRouter } from 'expo-router';
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Platform,
@@ -8,10 +8,12 @@ import {
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   View,
 } from 'react-native';
 
 import { Fonts, Spacing } from '@/constants/theme';
+import { buildAuthHref, isAuthSessionUnavailableError } from '@/features/auth/auth-flow';
 import { useAuth } from '@/features/auth/auth-state';
 import { getRevenueCatEntitlementState, restoreRevenueCatPurchases } from '@/lib/revenuecat';
 
@@ -30,13 +32,34 @@ type Notice = {
   tone: 'default' | 'error';
 };
 
+type SaveState = 'idle' | 'saving';
+
 export function AccountScreen() {
   const router = useRouter();
-  const { activeEntitlements, entitlementStatus, isAuthenticated, isBillingReady, signOut, user } = useAuth();
+  const { activeEntitlements, entitlementStatus, isAuthenticated, isBillingReady, profile, session, signOut, updateDisplayName, user } =
+    useAuth();
   const [actionState, setActionState] = useState<'idle' | 'restoring' | 'signing-out'>('idle');
   const [notice, setNotice] = useState<Notice | null>(null);
+  const [displayNameDraft, setDisplayNameDraft] = useState('');
+  const [saveState, setSaveState] = useState<SaveState>('idle');
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [saveMessage, setSaveMessage] = useState<string | null>(null);
+  const previousUserIdRef = useRef<string | null>(null);
 
   const identityLabel = user?.email ?? user?.phone ?? user?.id ?? 'Unknown user';
+  const editableDisplayName = useMemo(() => {
+    if (!profile.displayName) {
+      return '';
+    }
+
+    return profile.displayName === user?.email ? '' : profile.displayName;
+  }, [profile.displayName, user?.email]);
+  const trimmedDisplayNameDraft = displayNameDraft.trim();
+  const isSaving = saveState === 'saving';
+  const isDisplayNameDirty = trimmedDisplayNameDraft !== editableDisplayName;
+  const canSaveDisplayName =
+    actionState === 'idle' && !isSaving && trimmedDisplayNameDraft.length > 0 && isDisplayNameDirty;
+  const canCancelDisplayName = actionState === 'idle' && !isSaving && (isDisplayNameDirty || saveError !== null);
   const accountHref: Href = useMemo(
     () => ({
       pathname: '/auth',
@@ -59,6 +82,30 @@ export function AccountScreen() {
 
     return 'No active subscription found.';
   }, [entitlementStatus, isBillingReady]);
+
+  useEffect(() => {
+    if (!isAuthenticated) {
+      previousUserIdRef.current = null;
+      setDisplayNameDraft('');
+      setSaveError(null);
+      setSaveMessage(null);
+      setSaveState('idle');
+      return;
+    }
+
+    const nextUserId = user?.id ?? null;
+    const hasChangedUser = previousUserIdRef.current !== nextUserId;
+    previousUserIdRef.current = nextUserId;
+
+    if (!hasChangedUser) {
+      return;
+    }
+
+    setDisplayNameDraft(editableDisplayName);
+    setSaveError(null);
+    setSaveMessage(null);
+    setSaveState('idle');
+  }, [editableDisplayName, isAuthenticated, user?.id]);
 
   const handleRestore = async () => {
     if (Platform.OS === 'web') {
@@ -105,6 +152,45 @@ export function AccountScreen() {
     }
   };
 
+  const handleCancelDisplayName = () => {
+    setDisplayNameDraft(editableDisplayName);
+    setSaveError(null);
+    setSaveMessage(null);
+  };
+
+  const handleSaveDisplayName = async () => {
+    if (trimmedDisplayNameDraft.length === 0) {
+      setSaveError('Enter the name you want Apple Pie to show before saving.');
+      setSaveMessage(null);
+      return;
+    }
+
+    if (!isAuthenticated || !session?.user) {
+      router.push(buildAuthHref({ reason: 'account-save', returnTo: '/account' }));
+      return;
+    }
+
+    setSaveState('saving');
+    setSaveError(null);
+    setSaveMessage(null);
+    setNotice(null);
+
+    try {
+      await updateDisplayName(trimmedDisplayNameDraft);
+      setDisplayNameDraft(trimmedDisplayNameDraft);
+      setSaveMessage('Display name saved.');
+    } catch (error) {
+      if (isAuthSessionUnavailableError(error)) {
+        router.push(buildAuthHref({ reason: 'account-save', returnTo: '/account' }));
+        return;
+      }
+
+      setSaveError(error instanceof Error ? error.message : 'We could not save your display name right now.');
+    } finally {
+      setSaveState('idle');
+    }
+  };
+
   return (
     <View style={styles.screen}>
       <View pointerEvents="none" style={styles.glow} />
@@ -125,6 +211,71 @@ export function AccountScreen() {
           {isAuthenticated ? (
             <>
               <View style={styles.card}>
+                <Text style={styles.cardTitle}>Display name</Text>
+                <Text style={styles.cardBody}>
+                  {editableDisplayName
+                    ? 'Update the name Apple Pie shows on your account.'
+                    : 'Add the name you want Apple Pie to show on your account.'}
+                </Text>
+                <Text style={styles.fieldLabel}>Name</Text>
+                <TextInput
+                  autoCapitalize="words"
+                  autoCorrect={false}
+                  editable={actionState === 'idle' && !isSaving}
+                  onChangeText={(nextValue) => {
+                    setDisplayNameDraft(nextValue);
+                    setSaveError(null);
+                    if (nextValue.trim() !== editableDisplayName) {
+                      setSaveMessage(null);
+                    }
+                  }}
+                  placeholder="Add your display name"
+                  placeholderTextColor="rgba(255, 244, 227, 0.32)"
+                  returnKeyType="done"
+                  style={styles.input}
+                  value={displayNameDraft}
+                />
+                <Text style={styles.meta}>
+                  {editableDisplayName
+                    ? 'Cancel reverts to the saved name already on your account.'
+                    : 'Your sign-in email stays visible below even before you add a name.'}
+                </Text>
+
+                {isSaving ? (
+                  <View style={[styles.inlineStatus, styles.inlineStatusDefault]}>
+                    <ActivityIndicator color={SUCCESS} size="small" />
+                    <Text style={styles.inlineStatusText}>Saving display name…</Text>
+                  </View>
+                ) : saveError ? (
+                  <View style={[styles.inlineStatus, styles.inlineStatusError]}>
+                    <Text style={[styles.inlineStatusText, styles.inlineStatusTextError]}>{saveError}</Text>
+                  </View>
+                ) : saveMessage ? (
+                  <View style={[styles.inlineStatus, styles.inlineStatusDefault]}>
+                    <Text style={styles.inlineStatusText}>{saveMessage}</Text>
+                  </View>
+                ) : null}
+
+                <View style={styles.actionsRow}>
+                  <ActionButton
+                    disabled={!canCancelDisplayName}
+                    label="Cancel"
+                    onPress={handleCancelDisplayName}
+                    variant="secondary"
+                  />
+                  <ActionButton
+                    disabled={!canSaveDisplayName}
+                    label="Save"
+                    loading={isSaving}
+                    onPress={() => {
+                      void handleSaveDisplayName();
+                    }}
+                    variant="primary"
+                  />
+                </View>
+              </View>
+
+              <View style={styles.card}>
                 <InfoRow label="Email" value={identityLabel} />
                 <InfoRow label="User ID" mono value={user?.id ?? 'Unavailable'} />
               </View>
@@ -143,7 +294,7 @@ export function AccountScreen() {
 
               <View style={styles.actionsRow}>
                 <ActionButton
-                  disabled={actionState !== 'idle' || Platform.OS === 'web'}
+                  disabled={actionState !== 'idle' || isSaving || Platform.OS === 'web'}
                   label="Restore purchases"
                   loading={actionState === 'restoring'}
                   onPress={() => {
@@ -152,7 +303,7 @@ export function AccountScreen() {
                   variant="secondary"
                 />
                 <ActionButton
-                  disabled={actionState !== 'idle'}
+                  disabled={actionState !== 'idle' || isSaving}
                   label="Sign out"
                   loading={actionState === 'signing-out'}
                   onPress={() => {
@@ -285,6 +436,19 @@ const styles = StyleSheet.create({
     padding: Spacing.three,
     width: '100%',
   },
+  cardBody: {
+    color: MUTED,
+    fontFamily: Fonts.sans,
+    fontSize: 14,
+    fontWeight: '500',
+    lineHeight: 21,
+  },
+  cardTitle: {
+    color: TEXT,
+    fontFamily: Fonts.sans,
+    fontSize: 20,
+    fontWeight: '700',
+  },
   content: {
     alignItems: 'center',
     flexGrow: 1,
@@ -323,6 +487,58 @@ const styles = StyleSheet.create({
     right: -40,
     top: 72,
     width: 260,
+  },
+  inlineStatus: {
+    alignItems: 'center',
+    borderRadius: 16,
+    borderWidth: StyleSheet.hairlineWidth,
+    flexDirection: 'row',
+    gap: Spacing.two,
+    marginTop: Spacing.one,
+    paddingHorizontal: Spacing.three,
+    paddingVertical: Spacing.two,
+  },
+  inlineStatusDefault: {
+    backgroundColor: 'rgba(191, 243, 202, 0.08)',
+    borderColor: 'rgba(191, 243, 202, 0.2)',
+  },
+  inlineStatusError: {
+    backgroundColor: 'rgba(255, 180, 180, 0.08)',
+    borderColor: 'rgba(255, 180, 180, 0.24)',
+  },
+  inlineStatusText: {
+    color: SUCCESS,
+    flex: 1,
+    fontFamily: Fonts.sans,
+    fontSize: 14,
+    fontWeight: '600',
+    lineHeight: 20,
+  },
+  inlineStatusTextError: {
+    color: ERROR,
+  },
+  input: {
+    backgroundColor: 'rgba(255, 244, 227, 0.06)',
+    borderColor: 'rgba(255, 244, 227, 0.16)',
+    borderRadius: 18,
+    borderWidth: StyleSheet.hairlineWidth,
+    color: TEXT,
+    fontFamily: Fonts.sans,
+    fontSize: 16,
+    fontWeight: '600',
+    minHeight: 54,
+    paddingHorizontal: Spacing.three,
+    paddingVertical: Spacing.two,
+    width: '100%',
+  },
+  fieldLabel: {
+    color: MUTED,
+    fontFamily: Fonts.mono,
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 0.7,
+    marginTop: Spacing.one,
+    textTransform: 'uppercase',
   },
   infoLabel: {
     color: MUTED,

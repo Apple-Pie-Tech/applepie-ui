@@ -10,7 +10,7 @@ export default defineConfig({
   outputDir: path.join(tmpdir(), 'applepie-ui-playwright'),
   reporter: 'list',
   testDir: './tests/browser',
-  testMatch: 'universe-ui.spec.ts',
+  testMatch: ['universe-ui.spec.ts', 'account-ui.spec.ts'],
   timeout: 20_000,
   use: {
     ...devices['Desktop Chrome'],

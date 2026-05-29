@@ -12,6 +12,26 @@ export async function primeSignedInSession(page: Page, returnTo: string, options
   await page.goto(returnTo);
 }
 
+export async function primeSignedInSessionForReload(
+  page: Page,
+  returnTo: string,
+  options?: { entitled?: boolean },
+) {
+  await page.goto(returnTo);
+  await page.evaluate(
+    ({ entitlements, session }) => {
+      window.localStorage.setItem('applepie.test.activeEntitlements', JSON.stringify(entitlements));
+      window.localStorage.setItem('sb-example-auth-token', JSON.stringify(session));
+    },
+    {
+      entitlements: options?.entitled ? ['podcast_generation'] : [],
+      session: buildSupabaseSession(),
+    },
+  );
+
+  await page.reload();
+}
+
 function buildSupabaseSession() {
   const user = {
     app_metadata: { provider: 'google', providers: ['google'] },

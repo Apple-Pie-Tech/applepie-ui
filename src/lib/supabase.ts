@@ -6,6 +6,8 @@ import { Platform } from 'react-native';
 
 import { getRequiredExpoPublicEnv } from '@/constants/env';
 
+import { getSupabaseDisplayName, updateSupabaseDisplayNameWithAuth } from './supabase-auth-metadata';
+
 export const supabaseUrl = getRequiredExpoPublicEnv('EXPO_PUBLIC_SUPABASE_URL');
 export const supabasePublishableKey = getRequiredExpoPublicEnv('EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY');
 const supabaseStorage = Platform.OS === 'web' ? createWebStorage() : AsyncStorage;
@@ -25,12 +27,18 @@ export type SupabaseAuthState = {
   userId: string | null;
 };
 
+export { getSupabaseDisplayName };
+
 export function getSupabaseAuthState(session: Session | null | undefined): SupabaseAuthState {
   return {
     expiresAt: session?.expires_at ?? null,
     isSignedIn: Boolean(session?.user),
     userId: session?.user.id ?? null,
   };
+}
+
+export function updateSupabaseDisplayName(displayName: string) {
+  return updateSupabaseDisplayNameWithAuth(displayName, supabase.auth);
 }
 
 function createWebStorage() {

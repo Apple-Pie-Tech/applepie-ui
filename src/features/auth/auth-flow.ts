@@ -1,6 +1,8 @@
 import type { Href } from 'expo-router';
 
-export type AuthReason = 'podcast-generate' | 'recording-send';
+export type AuthReason = 'account-save' | 'podcast-generate' | 'recording-send';
+
+const AUTH_SESSION_UNAVAILABLE_PATTERN = /auth session missing|jwt expired|invalid jwt/i;
 
 export function buildAuthPath({ reason, returnTo }: { reason: AuthReason; returnTo: string }): Href {
   return `/auth?reason=${encodeURIComponent(reason)}&returnTo=${encodeURIComponent(returnTo)}` as Href;
@@ -38,4 +40,12 @@ export function normalizeReturnTo(value: string | string[] | undefined): string 
 
 export function readSearchParam(value: string | string[] | undefined) {
   return Array.isArray(value) ? value[0] : value;
+}
+
+export function isAuthSessionUnavailableError(error: unknown) {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+
+  return error.name === 'AuthSessionMissingError' || AUTH_SESSION_UNAVAILABLE_PATTERN.test(error.message);
 }

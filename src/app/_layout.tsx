@@ -12,6 +12,7 @@ export default function RootLayout() {
 
   return (
     <ThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>
+      {/* RecordingProvider reads auth state, so AuthProvider must stay above it. */}
       <AuthProvider>
         <RecordingProvider>
           <AnimatedSplashOverlay />

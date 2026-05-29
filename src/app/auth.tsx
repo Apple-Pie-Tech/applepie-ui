@@ -43,7 +43,7 @@ export default function AuthScreen() {
   const reason = readSearchParam(params.reason) as AuthReason | undefined;
   const title = useMemo(() => getTitle(reason), [reason]);
   const description = useMemo(() => getDescription(reason), [reason]);
-  const returnLabel = returnTo === '/record' ? 'Record' : 'Universe';
+  const returnLabel = useMemo(() => getReturnLabel(returnTo), [returnTo]);
   const redirectTo = useMemo(
     () =>
       Linking.createURL('/auth', {
@@ -277,6 +277,10 @@ function hasAuthCallbackParams(url: string) {
 }
 
 function getDescription(reason: AuthReason | undefined) {
+  if (reason === 'account-save') {
+    return 'Use Google to sign in again, then we’ll take you back to Account so you can finish saving your display name safely.';
+  }
+
   if (reason === 'recording-send') {
     return 'Use Google to sign in, then we’ll bring you straight back so you can finish sending this recording.';
   }
@@ -289,6 +293,10 @@ function getDescription(reason: AuthReason | undefined) {
 }
 
 function getTitle(reason: AuthReason | undefined) {
+  if (reason === 'account-save') {
+    return 'Sign in to save account changes';
+  }
+
   if (reason === 'recording-send') {
     return 'Sign in to send this recording';
   }
@@ -298,6 +306,18 @@ function getTitle(reason: AuthReason | undefined) {
   }
 
   return 'Sign in with Google';
+}
+
+function getReturnLabel(returnTo: string) {
+  if (returnTo === '/record') {
+    return 'Record';
+  }
+
+  if (returnTo === '/account') {
+    return 'Account';
+  }
+
+  return 'Universe';
 }
 
 const styles = StyleSheet.create({
