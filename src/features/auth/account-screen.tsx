@@ -94,7 +94,7 @@ export function AccountScreen() {
 
     try {
       await signOut();
-      setNotice({ message: 'Signed out. Use the same email pass to return any time.', tone: 'default' });
+      setNotice({ message: 'Signed out. Use Google to return any time.', tone: 'default' });
     } catch (error) {
       setNotice({
         message: error instanceof Error ? error.message : 'We could not sign you out right now.',
@@ -119,7 +119,7 @@ export function AccountScreen() {
           <Text style={styles.description}>
             {isAuthenticated
               ? 'Check your identity, entitlement state, and purchase recovery from the same shell.'
-              : 'Use your email pass to view subscription status, restore purchases, and sign out later.'}
+              : 'Use Google to view subscription status, restore purchases, and sign out later.'}
           </Text>
 
           {isAuthenticated ? (
@@ -170,7 +170,7 @@ export function AccountScreen() {
               </Text>
               <ActionButton
                 disabled={false}
-                label="Sign in with email"
+                label="Sign in with Google"
                 onPress={() => {
                   router.push(accountHref);
                 }}

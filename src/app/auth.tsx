@@ -1,15 +1,13 @@
-import type { EmailOtpType } from '@supabase/supabase-js';
 import * as Linking from 'expo-linking';
 import type { Href } from 'expo-router';
 import { useLocalSearchParams, useRouter } from 'expo-router';
+import * as WebBrowser from 'expo-web-browser';
 import React, { useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
-  Platform,
   Pressable,
   StyleSheet,
   Text,
-  TextInput,
   View,
 } from 'react-native';
 
@@ -23,34 +21,39 @@ const PANEL = 'rgba(8, 12, 23, 0.94)';
 const TEXT = '#fff4e3';
 const MUTED = 'rgba(255, 244, 227, 0.62)';
 const APPLE_ORANGE = '#ff965c';
-const APPLE_ORANGE_SOFT = 'rgba(255, 150, 92, 0.12)';
 const ERROR = '#ffb4b4';
 
-const RECOVERY_TYPES = new Set<EmailOtpType>(['email', 'invite', 'magiclink', 'recovery']);
+WebBrowser.maybeCompleteAuthSession();
 
-type RecoveryState = 'idle' | 'sending' | 'sent' | 'verifying';
+type GoogleAuthState = 'idle' | 'starting' | 'finishing';
 
 export default function AuthScreen() {
   const router = useRouter();
   const params = useLocalSearchParams<{
     reason?: string | string[];
     returnTo?: string | string[];
-    token_hash?: string | string[];
-    type?: string | string[];
   }>();
   const { isAuthenticated } = useAuth();
-  const [email, setEmail] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
-  const [state, setState] = useState<RecoveryState>('idle');
+  const [state, setState] = useState<GoogleAuthState>('idle');
+  const callbackUrl = Linking.useLinkingURL();
 
   const returnTo = normalizeReturnTo(params.returnTo);
   const reason = readSearchParam(params.reason) as AuthReason | undefined;
-  const tokenHash = readSearchParam(params.token_hash);
-  const recoveryType = readSearchParam(params.type);
   const title = useMemo(() => getTitle(reason), [reason]);
   const description = useMemo(() => getDescription(reason), [reason]);
   const returnLabel = returnTo === '/record' ? 'Record' : 'Universe';
+  const redirectTo = useMemo(
+    () =>
+      Linking.createURL('/auth', {
+        queryParams: {
+          reason,
+          returnTo,
+        },
+      }),
+    [reason, returnTo],
+  );
 
   useEffect(() => {
     if (!isAuthenticated) {
@@ -61,62 +64,36 @@ export default function AuthScreen() {
   }, [isAuthenticated, returnTo, router]);
 
   useEffect(() => {
-    if (!tokenHash) {
-      return;
-    }
-
-    if (!isRecoveryType(recoveryType)) {
-      setError('This sign-in link is missing recovery details. Request a fresh link.');
+    if (!callbackUrl || !hasAuthCallbackParams(callbackUrl)) {
       return;
     }
 
     let cancelled = false;
-    setState('verifying');
+    setState('finishing');
     setError(null);
-    setMessage('Finishing your sign-in…');
+    setMessage('Finishing your Google sign-in…');
 
-    void supabase.auth
-      .verifyOtp({ token_hash: tokenHash, type: recoveryType })
-      .then(async ({ data, error: verifyError }) => {
+    void createSessionFromUrl(callbackUrl)
+      .then((createdSession) => {
         if (cancelled) {
           return;
         }
 
-        if (verifyError) {
-          setError(verifyError.message);
-          setMessage(null);
+        if (!createdSession) {
           setState('idle');
           return;
         }
 
-        if (data.session?.access_token && data.session.refresh_token) {
-          const { error: sessionError } = await supabase.auth.setSession({
-            access_token: data.session.access_token,
-            refresh_token: data.session.refresh_token,
-          });
-
-          if (cancelled) {
-            return;
-          }
-
-          if (sessionError) {
-            setError(sessionError.message);
-            setMessage(null);
-            setState('idle');
-            return;
-          }
-        }
-
         setMessage('Signed in. Taking you back…');
-        setState('sent');
+        setState('idle');
         router.replace(returnTo as Href);
       })
-      .catch((verifyError: unknown) => {
+      .catch((sessionError: unknown) => {
         if (cancelled) {
           return;
         }
 
-        setError(verifyError instanceof Error ? verifyError.message : 'We could not finish the sign-in link.');
+        setError(sessionError instanceof Error ? sessionError.message : 'We could not finish Google sign-in.');
         setMessage(null);
         setState('idle');
       });
@@ -124,31 +101,18 @@ export default function AuthScreen() {
     return () => {
       cancelled = true;
     };
-  }, [recoveryType, tokenHash]);
+  }, [callbackUrl, returnTo, router]);
 
-  const handleEmailLink = async () => {
-    const nextEmail = email.trim().toLowerCase();
-
-    if (!nextEmail) {
-      setError('Enter an email address first.');
-      return;
-    }
-
-    setState('sending');
+  const handleGoogleSignIn = async () => {
+    setState('starting');
     setError(null);
     setMessage(null);
 
-    const emailRedirectTo = Linking.createURL('/auth', {
-      queryParams: {
-        reason,
-        returnTo,
-      },
-    });
-
-    const { error: signInError } = await supabase.auth.signInWithOtp({
-      email: nextEmail,
+    const { data, error: signInError } = await supabase.auth.signInWithOAuth({
+      provider: 'google',
       options: {
-        emailRedirectTo,
+        redirectTo,
+        skipBrowserRedirect: true,
       },
     });
 
@@ -159,9 +123,45 @@ export default function AuthScreen() {
       return;
     }
 
-    setMessage('Check your inbox for a sign-in link, then open it on this device to continue.');
-    setState('sent');
+    if (!data.url) {
+      setError('Google sign-in did not return a browser URL.');
+      setState('idle');
+      return;
+    }
+
+    const authResult = await WebBrowser.openAuthSessionAsync(data.url, redirectTo);
+
+    if (authResult.type === 'success') {
+      try {
+        setState('finishing');
+        setMessage('Finishing your Google sign-in…');
+        const createdSession = await createSessionFromUrl(authResult.url);
+
+        if (createdSession) {
+          setMessage('Signed in. Taking you back…');
+          router.replace(returnTo as Href);
+          return;
+        }
+      } catch (sessionError) {
+        setError(sessionError instanceof Error ? sessionError.message : 'We could not finish Google sign-in.');
+        setMessage(null);
+        setState('idle');
+        return;
+      }
+    }
+
+    if (authResult.type === 'cancel' || authResult.type === 'dismiss') {
+      setMessage(null);
+      setState('idle');
+      return;
+    }
+
+    setError('Google sign-in did not complete. Try again.');
+    setMessage(null);
+    setState('idle');
   };
+
+  const isBusy = state === 'starting' || state === 'finishing';
 
   return (
     <View style={styles.screen}>
@@ -172,42 +172,25 @@ export default function AuthScreen() {
             <Text style={styles.badgeText}>ID</Text>
           </View>
 
-          <Text style={styles.kicker}>Email pass</Text>
+          <Text style={styles.kicker}>Google sign-in</Text>
           <Text style={styles.title}>{title}</Text>
           <Text style={styles.description}>{description}</Text>
 
-          <View style={styles.inputCard}>
-            <Text style={styles.label}>Email address</Text>
-            <TextInput
-              accessibilityLabel="Email address"
-              autoCapitalize="none"
-              autoComplete="email"
-              autoCorrect={false}
-              keyboardType="email-address"
-              onChangeText={setEmail}
-              placeholder="you@example.com"
-              placeholderTextColor="rgba(255, 244, 227, 0.36)"
-              selectionColor={APPLE_ORANGE}
-              style={styles.input}
-              value={email}
-            />
-          </View>
-
           <Pressable
             accessibilityRole="button"
-            disabled={state === 'sending' || state === 'verifying'}
+            disabled={isBusy}
             onPress={() => {
-              void handleEmailLink();
+              void handleGoogleSignIn();
             }}
             style={({ pressed }) => [
               styles.primaryButton,
-              (state === 'sending' || state === 'verifying') && styles.buttonDisabled,
-              pressed && state !== 'sending' && state !== 'verifying' && styles.pressed,
+              isBusy && styles.buttonDisabled,
+              pressed && !isBusy && styles.pressed,
             ]}>
-            {state === 'sending' || state === 'verifying' ? (
+            {isBusy ? (
               <ActivityIndicator color={SPACE} size="small" />
             ) : (
-              <Text style={styles.primaryButtonText}>Email me a sign-in link</Text>
+              <Text style={styles.primaryButtonText}>Continue with Google</Text>
             )}
           </Pressable>
 
@@ -230,16 +213,79 @@ export default function AuthScreen() {
   );
 }
 
+async function createSessionFromUrl(url: string) {
+  const params = getAuthParamsFromUrl(url);
+  const errorDescription = params.get('error_description') ?? params.get('error');
+
+  if (errorDescription) {
+    throw new Error(errorDescription);
+  }
+
+  const code = params.get('code');
+  if (code) {
+    const { data, error } = await supabase.auth.exchangeCodeForSession(code);
+    if (error) {
+      throw error;
+    }
+
+    return data.session;
+  }
+
+  const accessToken = params.get('access_token');
+  const refreshToken = params.get('refresh_token');
+
+  if (!accessToken) {
+    return null;
+  }
+
+  if (!refreshToken) {
+    throw new Error('Google sign-in did not include a refresh token.');
+  }
+
+  const { data, error } = await supabase.auth.setSession({
+    access_token: accessToken,
+    refresh_token: refreshToken,
+  });
+
+  if (error) {
+    throw error;
+  }
+
+  return data.session;
+}
+
+function getAuthParamsFromUrl(url: string) {
+  const parsedUrl = new URL(url);
+  const params = new URLSearchParams(parsedUrl.search);
+  const hashParams = new URLSearchParams(parsedUrl.hash.replace(/^#/, ''));
+
+  hashParams.forEach((value, key) => {
+    params.set(key, value);
+  });
+
+  return params;
+}
+
+function hasAuthCallbackParams(url: string) {
+  try {
+    const params = getAuthParamsFromUrl(url);
+
+    return Boolean(params.get('access_token') || params.get('refresh_token') || params.get('code') || params.get('error'));
+  } catch {
+    return false;
+  }
+}
+
 function getDescription(reason: AuthReason | undefined) {
   if (reason === 'recording-send') {
-    return 'We’ll email a secure link, then bring you straight back so you can finish sending this recording.';
+    return 'Use Google to sign in, then we’ll bring you straight back so you can finish sending this recording.';
   }
 
   if (reason === 'podcast-generate') {
-    return 'We’ll email a secure link, then reopen your generation panel so you can kick off the podcast right away.';
+    return 'Use Google to sign in, then we’ll reopen your generation panel so you can kick off the podcast right away.';
   }
 
-  return 'We’ll email a secure link. New Apple Pie accounts are created automatically on first sign-in.';
+  return 'Use Google to sign in. New Apple Pie accounts are created automatically the first time you continue.';
 }
 
 function getTitle(reason: AuthReason | undefined) {
@@ -251,11 +297,7 @@ function getTitle(reason: AuthReason | undefined) {
     return 'Sign in to generate this podcast';
   }
 
-  return 'Sign in with email';
-}
-
-function isRecoveryType(value: string | undefined): value is EmailOtpType {
-  return Boolean(value && RECOVERY_TYPES.has(value as EmailOtpType));
+  return 'Sign in with Google';
 }
 
 const styles = StyleSheet.create({
@@ -305,23 +347,6 @@ const styles = StyleSheet.create({
     top: 64,
     width: 240,
   },
-  input: {
-    color: TEXT,
-    fontFamily: Fonts.sans,
-    fontSize: 17,
-    fontWeight: '600',
-    paddingBottom: Platform.OS === 'web' ? 12 : 14,
-    paddingTop: Platform.OS === 'web' ? 12 : 14,
-  },
-  inputCard: {
-    backgroundColor: APPLE_ORANGE_SOFT,
-    borderColor: 'rgba(255, 244, 227, 0.12)',
-    borderRadius: 18,
-    borderWidth: 1,
-    marginBottom: Spacing.three,
-    paddingHorizontal: Spacing.three,
-    paddingVertical: Spacing.two,
-  },
   kicker: {
     color: APPLE_ORANGE,
     fontFamily: Fonts.mono,
@@ -329,14 +354,6 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     letterSpacing: 1.6,
     marginBottom: Spacing.one,
-    textTransform: 'uppercase',
-  },
-  label: {
-    color: MUTED,
-    fontFamily: Fonts.mono,
-    fontSize: 10,
-    fontWeight: '700',
-    letterSpacing: 1,
     textTransform: 'uppercase',
   },
   panel: {
