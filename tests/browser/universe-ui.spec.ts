@@ -1,5 +1,7 @@
 import { expect, Page, Route, TestInfo, test } from '@playwright/test';
 
+import { primeSignedInSession } from './helpers/auth';
+
 const LIVE_UNIVERSE_RESPONSE = {
   edges: [
     { source_id: 'point-mom-1', target_id: 'point-lisbon-1' },
@@ -54,10 +56,6 @@ type MockRouteStep =
       body: object;
       status: number;
     };
-
-type MockSupabaseAuthHandle = {
-  otpCalls: number;
-};
 
 test.describe('root shell static-web safety', () => {
   test('hydration / route stays safe for a direct dark-mode load', async ({ page }, testInfo) => {
@@ -671,9 +669,8 @@ test.describe('browser-safe record route parity', () => {
     });
   });
 
-  test('podcast generation stays blocked while signed out and recovery returns to the generation menu', async ({ page }, testInfo) => {
+  test('podcast generation stays blocked while signed out and test auth bypass returns to the generation menu', async ({ page }, testInfo) => {
     const finalizeDiagnostics = captureBrowserDiagnostics(page, testInfo);
-    const auth = await mockSupabaseAuth(page);
     const provisionApi = await mockProvisionApi(page, {
       detailSequence: [RUNNING_PODCAST, COMPLETED_PODCAST],
       initialPodcasts: [],
@@ -692,13 +689,9 @@ test.describe('browser-safe record route parity', () => {
 
     await expect(page).toHaveURL(/\/auth\?/);
     await expect(page.getByText('Sign in to generate this podcast')).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Continue with Google' })).toBeVisible();
     expect(provisionApi.createCalls).toBe(0);
     const returnTo = readReturnToFromUrl(page.url());
-
-    await page.getByLabel('Email address').fill('mom@example.com');
-    await page.getByRole('button', { name: 'Email me a sign-in link' }).click();
-    await expect(page.getByText('Check your inbox for a sign-in link')).toBeVisible();
-    expect(auth.otpCalls).toBe(1);
 
     await primeSignedInSession(page, returnTo, { entitled: true });
 
@@ -713,9 +706,8 @@ test.describe('browser-safe record route parity', () => {
     await finalizeDiagnostics({ failOnDiagnostics: true });
   });
 
-  test('record send stays blocked while signed out and recovery returns to /record before upload', async ({ page }, testInfo) => {
+  test('record send stays blocked while signed out and test auth bypass returns to /record before upload', async ({ page }, testInfo) => {
     const finalizeDiagnostics = captureBrowserDiagnostics(page, testInfo);
-    const auth = await mockSupabaseAuth(page);
     await mockBrowserRecording(page);
     await mockProvisionApi(page, {
       initialPodcasts: [],
@@ -731,13 +723,9 @@ test.describe('browser-safe record route parity', () => {
 
     await expect(page).toHaveURL(/\/auth\?/);
     await expect(page.getByText('Sign in to send this recording')).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Continue with Google' })).toBeVisible();
     expect(ingest.calls).toBe(0);
     const returnTo = readReturnToFromUrl(page.url());
-
-    await page.getByLabel('Email address').fill('record@example.com');
-    await page.getByRole('button', { name: 'Email me a sign-in link' }).click();
-    await expect(page.getByText('Check your inbox for a sign-in link')).toBeVisible();
-    expect(auth.otpCalls).toBe(1);
 
     await primeSignedInSession(page, returnTo);
 
@@ -898,34 +886,6 @@ async function mockIngestApi(page: Page) {
   return calls;
 }
 
-async function mockSupabaseAuth(page: Page): Promise<MockSupabaseAuthHandle> {
-  const calls: MockSupabaseAuthHandle = {
-    otpCalls: 0,
-  };
-
-  await page.route('**/auth/v1/otp**', async (route) => {
-    calls.otpCalls += 1;
-    await fulfillJson(route, 200, {
-      session: null,
-      user: null,
-    });
-  });
-
-  return calls;
-}
-
-async function primeSignedInSession(page: Page, returnTo: string, options?: { entitled?: boolean }) {
-  await page.addInitScript(({ entitlements, session }) => {
-    window.localStorage.setItem('applepie.test.activeEntitlements', JSON.stringify(entitlements));
-    window.localStorage.setItem('sb-example-auth-token', JSON.stringify(session));
-  }, {
-    entitlements: options?.entitled ? ['podcast_generation'] : [],
-    session: buildSupabaseSession(),
-  });
-
-  await page.goto(returnTo);
-}
-
 function readReturnToFromUrl(url: string) {
   const value = new URL(url).searchParams.get('returnTo');
 
@@ -934,32 +894,6 @@ function readReturnToFromUrl(url: string) {
   }
 
   return value;
-}
-
-function buildSupabaseSession() {
-  const user = {
-    app_metadata: { provider: 'email', providers: ['email'] },
-    aud: 'authenticated',
-    confirmation_sent_at: '2026-05-28T00:00:00.000Z',
-    confirmed_at: '2026-05-28T00:00:00.000Z',
-    created_at: '2026-05-28T00:00:00.000Z',
-    email: 'user@example.com',
-    id: 'user-123',
-    identities: [],
-    phone: '',
-    role: 'authenticated',
-    updated_at: '2026-05-28T00:00:00.000Z',
-    user_metadata: {},
-  };
-
-  return {
-    access_token: 'access-token',
-    expires_at: Math.floor(Date.now() / 1000) + 3600,
-    expires_in: 3600,
-    refresh_token: 'refresh-token',
-    token_type: 'bearer',
-    user,
-  };
 }
 
 function captureBrowserDiagnostics(page: Page, testInfo: TestInfo) {
