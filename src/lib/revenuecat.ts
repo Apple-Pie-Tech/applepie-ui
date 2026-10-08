@@ -132,7 +132,10 @@ function getRevenueCatApiKey() {
 }
 
 function getWebCustomerInfoOverride(): CustomerInfo | null {
-  if (Platform.OS !== 'web' || typeof window === 'undefined') {
+  // __DEV__ keeps this test-only entitlement backdoor out of production web
+  // builds (expo export sets __DEV__ = false); Playwright runs against the
+  // dev server (expo start --web), where __DEV__ stays true.
+  if (!__DEV__ || Platform.OS !== 'web' || typeof window === 'undefined') {
     return null;
   }
 
