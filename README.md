@@ -42,17 +42,20 @@ EXPO_PUBLIC_SUPABASE_URL=
 EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY=
 EXPO_PUBLIC_REVENUECAT_IOS_API_KEY=
 EXPO_PUBLIC_REVENUECAT_ANDROID_API_KEY=
-EXPO_PUBLIC_INGEST_API_URL=https://<azure-ingestion-api-host>
+EXPO_PUBLIC_INGEST_API_URL=http://127.0.0.1:8000
 EXPO_PUBLIC_INGEST_API_KEY=
-EXPO_PUBLIC_PROVISION_API_URL=https://<azure-provision-api-host>
+EXPO_PUBLIC_PROVISION_API_URL=http://127.0.0.1:8002
 ```
+
+See `.env.example` for the full, current contract (including the Playwright-specific
+Supabase URL constraint).
 
 Notes:
 - `EXPO_PUBLIC_SUPABASE_URL` and `EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY` are required for Supabase Auth.
 - `EXPO_PUBLIC_REVENUECAT_IOS_API_KEY` and `EXPO_PUBLIC_REVENUECAT_ANDROID_API_KEY` are required on native builds, RevenueCat stays a web no-op.
-- `EXPO_PUBLIC_INGEST_API_URL` is required and must point to the deployed Azure ingestion API base URL.
+- `EXPO_PUBLIC_INGEST_API_URL` is required and points at the local `data-ingestion` API, e.g. `http://127.0.0.1:8000`.
 - `EXPO_PUBLIC_INGEST_API_KEY` is only needed if ingest auth is later enforced.
-- `EXPO_PUBLIC_PROVISION_API_URL` is required and must point to the deployed Azure data-provision API base URL.
+- `EXPO_PUBLIC_PROVISION_API_URL` is required and points at the local `data-provision-api`, e.g. `http://127.0.0.1:8002`.
 
 ## What is live in the UI now
 
@@ -79,3 +82,22 @@ These steps still require a runtime with a real microphone and reachable backend
 - the ingestion app must be reachable and CORS-enabled for web
 - the story-labeling service must be reachable if Phase 3 verification is being performed end to end
 - the data-provision API must have working Postgres/Blob/Qdrant backing services for live podcast generation
+
+## Local authentication (Supabase)
+
+There is no local Supabase instance in this repo, and you do not need one for the
+test suite.
+
+**For the Playwright E2E suite** (`npx playwright test`), auth is primed directly in
+`localStorage` by `tests/browser/helpers/auth.ts`. This is why
+`EXPO_PUBLIC_SUPABASE_URL` must be exactly `https://example.supabase.co`: supabase-js
+derives its storage key from the project ref in the URL, so the helper writes
+`sb-example-auth-token`, and any other URL silently produces a key the client never
+reads. The session then looks absent and every authenticated test fails in a way that
+looks like a UI bug. See `.env.example`.
+
+**For manual local development** you need a real Supabase project, because sign-in is
+Google OAuth and the redirect has to be registered with a real provider. Either point
+`EXPO_PUBLIC_SUPABASE_URL` / `EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY` at a development
+project, or run `supabase start` and configure a provider against it. Priming
+`localStorage` the way the tests do also works for a quick look around without signing in.
