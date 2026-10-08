@@ -11,7 +11,7 @@
     "lint": "expo lint",
     "typecheck": "tsc --noEmit",
     "export:web": "expo export --platform web",
-    "test:playwright-ui": "playwright test tests/browser/universe-ui.spec.ts"
+    "test:playwright-ui": "playwright test"
   },
   "dependencies": {
     "@react-native-async-storage/async-storage": "2.2.0",

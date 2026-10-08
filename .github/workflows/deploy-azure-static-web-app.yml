@@ -1,4 +1,9 @@
-name: Deploy Azure Static Web App
+# The Azure Static Web App this workflow deployed to no longer exists (see
+# ISSUES.md E13 / C1-C6): the whole Azure footprint behind it was torn down.
+# Deploying is disabled until a real hosting target is chosen again — do not
+# re-add the deploy step without one. This now only validates that the web
+# build still succeeds on every push to main.
+name: Build Azure Static Web App
 
 on:
   push:
@@ -14,8 +19,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  deploy:
-    name: Build and deploy
+  build:
+    name: Build
     runs-on: ubuntu-latest
 
     steps:
@@ -25,7 +30,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 24
+          node-version: 22
           cache: npm
 
       - name: Install dependencies
@@ -45,11 +50,3 @@ jobs:
           EXPO_PUBLIC_INGEST_API_URL: ${{ secrets.EXPO_PUBLIC_INGEST_API_URL }}
           EXPO_PUBLIC_INGEST_API_KEY: ${{ secrets.EXPO_PUBLIC_INGEST_API_KEY }}
           EXPO_PUBLIC_PROVISION_API_URL: ${{ secrets.EXPO_PUBLIC_PROVISION_API_URL }}
-
-      - name: Deploy to Azure Static Web Apps
-        uses: Azure/static-web-apps-deploy@v1
-        with:
-          azure_static_web_apps_api_token: ${{ secrets.AZURE_STATIC_WEB_APPS_API_TOKEN_APPLEPIE_UI }}
-          action: upload
-          app_location: dist
-          skip_app_build: true
