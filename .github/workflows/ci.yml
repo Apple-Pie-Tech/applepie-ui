@@ -1,31 +1,59 @@
-# A build check only. Publishing lives in deploy-frontend.yml, which pushes the
-# bundle to S3 behind CloudFront; this one exists to catch a broken web build
-# before it reaches main.
 name: CI
 
+# The test suite: lint, typecheck and the Playwright browser suite.
+#
+# Also the deploy gate. deploy-frontend.yml calls this workflow with
+# `uses: ./.github/workflows/ci.yml` and will not publish until it is green, so
+# the checks live here once rather than being duplicated into the deploy.
+
 on:
-  push:
-    branches:
-      - main
+  pull_request:
   workflow_dispatch:
+  workflow_call:
+
+concurrency:
+  # Keyed on the workflow too: when deploy-frontend.yml calls this one, both
+  # run under the same ref and a shared group would have them cancel each other.
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
 
-concurrency:
-  group: azure-static-web-app-${{ github.ref }}
-  cancel-in-progress: true
-
 jobs:
-  build:
-    name: Build
+  checks:
+    name: Lint, types and browser tests
     runs-on: ubuntu-latest
 
+    env:
+      CI: '1'
+      EXPO_NO_TELEMETRY: '1'
+      # Fixtures, not configuration, and emphatically not secrets: they name
+      # nothing real and are checked in on purpose so the suite is reproducible.
+      #
+      # EXPO_PUBLIC_SUPABASE_URL must be exactly https://example.supabase.co.
+      # supabase-js derives its localStorage key from the project ref in the
+      # URL, and tests/browser/helpers/auth.ts primes "sb-example-auth-token";
+      # any other URL produces a key the client never reads, the primed session
+      # looks absent, and every authenticated test fails looking like a UI bug.
+      EXPO_PUBLIC_SUPABASE_URL: https://example.supabase.co
+      # Only has to be non-empty -- src/constants/env.ts throws on a blank one.
+      EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY: sb_publishable_playwright_fixture
+      # Required and non-empty, but never reached: the specs intercept every
+      # API call with page.route(). Pointing them at localhost rather than the
+      # deployed function URLs is what guarantees a stray unmocked request
+      # fails loudly instead of hitting production.
+      EXPO_PUBLIC_INGEST_API_URL: http://127.0.0.1:8000
+      EXPO_PUBLIC_PROVISION_API_URL: http://127.0.0.1:8002
+      # Optional; blank is the documented local-development value.
+      EXPO_PUBLIC_INGEST_API_KEY: ''
+      EXPO_PUBLIC_PROVISION_API_KEY: ''
+
     steps:
-      - name: Checkout
+      - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Setup Node.js
+      - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -40,11 +68,29 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
-      - name: Export web app
-        run: npm run export:web
-        env:
-          EXPO_PUBLIC_SUPABASE_URL: ${{ secrets.EXPO_PUBLIC_SUPABASE_URL }}
-          EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY: ${{ secrets.EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY }}
-          EXPO_PUBLIC_INGEST_API_URL: ${{ secrets.EXPO_PUBLIC_INGEST_API_URL }}
-          EXPO_PUBLIC_INGEST_API_KEY: ${{ secrets.EXPO_PUBLIC_INGEST_API_KEY }}
-          EXPO_PUBLIC_PROVISION_API_URL: ${{ secrets.EXPO_PUBLIC_PROVISION_API_URL }}
+      - name: Install the Playwright browser
+        # Chromium only: playwright.config.ts has a single project pinned to
+        # devices['Desktop Chrome']. --with-deps installs the shared libraries
+        # the headless browser needs on a bare runner.
+        run: npx playwright install --with-deps chromium
+
+      - name: Run the browser suite
+        # playwright.config.ts starts `npm run web` itself and waits for
+        # http://127.0.0.1:8081, so there is no separate server step. That wait
+        # is what warms Metro: the dev server does not answer until it has
+        # bundled, so the first test does not pay for the cold build.
+        run: npm run test:playwright-ui
+
+      - name: Upload failure traces
+        # Only on a red run, and only then: the config keeps traces and
+        # screenshots on failure, and a Playwright failure in CI is close to
+        # undiagnosable without them.
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-failures
+          # playwright.config.ts puts outputDir under node's os.tmpdir(),
+          # which on a Linux runner is /tmp -- not runner.temp.
+          path: /tmp/applepie-ui-playwright
+          retention-days: 7
+          if-no-files-found: ignore
