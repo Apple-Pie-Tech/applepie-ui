@@ -1,9 +1,7 @@
-# The Azure Static Web App this workflow deployed to no longer exists (see
-# ISSUES.md E13 / C1-C6): the whole Azure footprint behind it was torn down.
-# Deploying is disabled until a real hosting target is chosen again — do not
-# re-add the deploy step without one. This now only validates that the web
-# build still succeeds on every push to main.
-name: Build Azure Static Web App
+# A build check only. Publishing lives in deploy-frontend.yml, which pushes the
+# bundle to S3 behind CloudFront; this one exists to catch a broken web build
+# before it reaches main.
+name: CI
 
 on:
   push:

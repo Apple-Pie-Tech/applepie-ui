@@ -1,0 +1,140 @@
+name: Deploy frontend
+
+# Builds the Expo web bundle and publishes it to the S3 bucket behind
+# CloudFront. Replaces deploy-azure-static-web-app.yml, whose target no longer
+# exists.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-frontend-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  # Required for OIDC. Without it the role assumption fails with a message that
+  # does not mention permissions.
+  id-token: write
+
+env:
+  AWS_REGION: us-east-1
+
+jobs:
+  deploy:
+    name: Build and publish
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Check types and lint
+        run: |
+          npm run lint
+          npm run typecheck
+
+      - name: Build the web bundle
+        env:
+          CI: '1'
+          EXPO_NO_TELEMETRY: '1'
+          # EXPO_PUBLIC_* values are inlined into the client bundle and are
+          # therefore public by definition. They belong in repository
+          # *variables*, not secrets: putting them in secrets implies a
+          # confidentiality the bundle cannot provide, and GitHub would mask
+          # them in logs while shipping them to every visitor.
+          EXPO_PUBLIC_SUPABASE_URL: ${{ vars.EXPO_PUBLIC_SUPABASE_URL }}
+          EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY: ${{ vars.EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY }}
+          EXPO_PUBLIC_INGEST_API_URL: ${{ vars.EXPO_PUBLIC_INGEST_API_URL }}
+          EXPO_PUBLIC_INGEST_API_KEY: ${{ vars.EXPO_PUBLIC_INGEST_API_KEY }}
+          EXPO_PUBLIC_PROVISION_API_URL: ${{ vars.EXPO_PUBLIC_PROVISION_API_URL }}
+          EXPO_PUBLIC_REVENUECAT_IOS_API_KEY: ${{ vars.EXPO_PUBLIC_REVENUECAT_IOS_API_KEY }}
+          EXPO_PUBLIC_REVENUECAT_ANDROID_API_KEY: ${{ vars.EXPO_PUBLIC_REVENUECAT_ANDROID_API_KEY }}
+        run: |
+          set -euo pipefail
+          npm run export:web
+          test -f dist/index.html
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          # The github_deploy_role_arn output of infrastructure/aws. An ARN, not
+          # a credential.
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Publish to S3
+        env:
+          BUCKET: ${{ vars.FRONTEND_BUCKET }}
+        run: |
+          set -euo pipefail
+          # Two passes, because the two kinds of file need opposite caching, and
+          # `expo export` produces one statically rendered HTML file per route --
+          # index.html, record.html, account.html, auth.html, +not-found.html --
+          # not a single shell.
+          #
+          # Hashed assets under _expo/ and assets/ are immutable: their name
+          # changes when their content does, so they can be cached for a year.
+          # --delete with --exclude '*.html' considers only non-HTML for removal,
+          # so it cannot delete the HTML the second pass is about to upload.
+          aws s3 sync dist/ "s3://$BUCKET/" \
+            --delete \
+            --exclude '*.html' \
+            --cache-control 'public, max-age=31536000, immutable'
+
+          # Every HTML file keeps the same name across builds, so a long TTL
+          # would pin visitors to the previous build's asset references and make
+          # the deploy invisible until the cache expired. --delete here removes
+          # the HTML of a route that no longer exists.
+          aws s3 sync dist/ "s3://$BUCKET/" \
+            --delete \
+            --exclude '*' \
+            --include '*.html' \
+            --cache-control 'public, max-age=0, must-revalidate' \
+            --content-type 'text/html; charset=utf-8'
+
+      - name: Invalidate the CloudFront cache
+        env:
+          DISTRIBUTION_ID: ${{ vars.CLOUDFRONT_DISTRIBUTION_ID }}
+        run: |
+          set -euo pipefail
+          # A single '/*' rather than an enumerated list. It is one invalidation
+          # path for billing -- and 1000 a month are free -- where naming each
+          # route's HTML would be several. It does also evict the immutable
+          # hashed assets, which is harmless: they are content-addressed, so the
+          # one re-fetch returns exactly the same bytes.
+          #
+          # The rewrite function runs on viewer-request, so cache keys are the
+          # resolved .html paths; '/*' covers those as well as the raw routes.
+          invalidation=$(aws cloudfront create-invalidation \
+            --distribution-id "$DISTRIBUTION_ID" \
+            --paths '/*' \
+            --query 'Invalidation.Id' --output text)
+          aws cloudfront wait invalidation-completed \
+            --distribution-id "$DISTRIBUTION_ID" --id "$invalidation"
+
+      - name: Smoke the published site
+        env:
+          FRONTEND_URL: ${{ vars.FRONTEND_URL }}
+        run: |
+          set -euo pipefail
+          status=$(curl -fsS -o /tmp/index.html -w '%{http_code}' "${FRONTEND_URL%/}/")
+          test "$status" = "200"
+          # A real route must resolve to its own statically rendered page, which
+          # is what the CloudFront rewrite function is for. /record exists as
+          # record.html in the build; if the rewrite were missing this would be
+          # a 403 from the bucket.
+          deep=$(curl -fsS -o /tmp/record.html -w '%{http_code}' "${FRONTEND_URL%/}/record")
+          test "$deep" = "200"
+          echo "published: $(wc -c </tmp/index.html) bytes of index.html, deep link $deep"
