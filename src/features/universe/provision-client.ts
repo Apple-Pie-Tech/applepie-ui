@@ -1,6 +1,11 @@
 import { fetch } from 'expo/fetch';
 import { Platform } from 'react-native';
 
+import {
+  AuthSessionMissingError,
+  buildAuthHeaders,
+} from '@/features/auth/access-token';
+
 import { getProvisionEndpoint, provisionApiKey } from '@/constants/provision';
 
 export type ProvisionUniversePoint = {
@@ -76,16 +81,19 @@ export async function fetchUniverse(): Promise<ProvisionUniverseResponse> {
 }
 
 export async function createPodcast(label: string): Promise<ProvisionPodcastDetail> {
+  // Only on the write. The API verifies the bearer token on POST /podcasts and
+  // leaves the reads open, so sending credentials on every GET would imply a
+  // check that is not there. Throws AuthSessionMissingError with no live
+  // session, which the caller routes to the sign-in screen.
+  const headers = await buildAuthHeaders({
+    'Content-Type': 'application/json',
+    ...(provisionApiKey ? { 'x-api-key': provisionApiKey } : {}),
+  });
+
   return parsePodcastDetail(
     await requestJson(getProvisionEndpoint('/podcasts'), {
       body: JSON.stringify({ label }),
-      headers: {
-        'Content-Type': 'application/json',
-        // Only on the write. The API gates POST /podcasts and leaves the reads
-        // open, so sending it on every GET would imply a check that is not
-        // there.
-        ...(provisionApiKey ? { 'x-api-key': provisionApiKey } : {}),
-      },
+      headers,
       method: 'POST',
     }),
   );
@@ -110,6 +118,13 @@ async function requestJson(input: string, init?: RequestInit): Promise<unknown> 
 
   const text = await response.text();
   const payload = parseJsonValue(text);
+
+  if (response.status === 401) {
+    // The server rejected the token rather than the request. Raised as an auth
+    // error so the caller sends the user to sign in again, instead of showing
+    // the API's deliberately opaque "unauthorized" string as a failure.
+    throw new AuthSessionMissingError('Invalid JWT');
+  }
 
   if (!response.ok) {
     throw new Error(getErrorMessage(payload, response.status));

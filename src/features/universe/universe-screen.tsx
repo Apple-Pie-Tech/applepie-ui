@@ -18,7 +18,12 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { BottomTabInset, MaxContentWidth } from '@/constants/theme';
-import { buildAuthHref, buildUniverseReturnPath, readSearchParam } from '@/features/auth/auth-flow';
+import {
+  buildAuthHref,
+  buildUniverseReturnPath,
+  isAuthSessionUnavailableError,
+  readSearchParam,
+} from '@/features/auth/auth-flow';
 import { useAuth } from '@/features/auth/auth-state';
 import { useRecording } from '@/features/recording/recording-state';
 import {
@@ -656,6 +661,19 @@ export function UniverseScreen({ mode = 'universe' }: { mode?: UniverseMode } = 
         [detail.label]: detail,
       }));
     } catch (error) {
+      // A dead session is not a failed generation: show the sign-in screen and
+      // come back to this topic's generate menu, rather than leaving "Invalid
+      // JWT" sitting in the topic's error slot. Mirrors account-screen.tsx.
+      if (isAuthSessionUnavailableError(error)) {
+        router.push(
+          buildAuthHref({
+            reason: 'podcast-generate',
+            returnTo: buildUniverseReturnPath({ menu: 'generate', topicId: selected.node.id }),
+          }),
+        );
+        return;
+      }
+
       setPodcastErrorsByLabel((current) => ({
         ...current,
         [selectedLabel]: error instanceof Error ? error.message : 'Podcast creation failed',

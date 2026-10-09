@@ -13,6 +13,7 @@ import React, {
   useState,
 } from 'react';
 
+import { isAuthSessionUnavailableError } from '@/features/auth/auth-flow';
 import { useAuth } from '@/features/auth/auth-state';
 
 import { IngestResult, submitRecordingToIngest } from './ingest-client';
@@ -247,7 +248,17 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
         }, 1400);
       } catch (err) {
         const capabilityError = getRecordingCapabilityError(err);
-        const message = err instanceof Error ? err.message : 'Upload failed';
+        // A dead session reaches here as AuthSessionMissingError, raised either
+        // by buildAuthHeaders before the request or by the API's 401. The raw
+        // message ("Auth session missing") reads like a bug, so say what to do
+        // instead. No redirect from here on purpose: this runs inside a
+        // status-driven effect, and app-tabs already routes the next send press
+        // once the provider has flipped isAuthenticated to false.
+        const message = isAuthSessionUnavailableError(err)
+          ? 'Your sign-in expired. Sign in again to send this recording.'
+          : err instanceof Error
+            ? err.message
+            : 'Upload failed';
         setIngestError(message);
         setErrorLabel(capabilityError?.statusLabel ?? (retryReady ? null : 'Recording error'));
         setStatus('error');

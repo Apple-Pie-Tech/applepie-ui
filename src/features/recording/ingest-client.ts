@@ -1,6 +1,8 @@
 import { fetch } from 'expo/fetch';
 import { Platform } from 'react-native';
 
+import { buildAuthHeaders } from '@/features/auth/access-token';
+
 import { getIngestEndpoint, ingestApiKey } from '@/constants/ingest';
 
 import { createRecordingUploadAudioBody } from './recording-capability';
@@ -41,7 +43,12 @@ export async function submitRecordingToIngest(
   );
   formData.append('audio', file, getRecordingFilename(recording));
 
-  const headers = ingestApiKey ? { 'x-api-key': ingestApiKey } : undefined;
+  // Throws AuthSessionMissingError when there is no live session, which
+  // recording-state turns into a trip to the sign-in screen. Deliberately
+  // outside the try below: that block maps *network* failures, and an absent
+  // session is not one. No Content-Type is set either -- FormData has to pick
+  // its own multipart boundary.
+  const headers = await buildAuthHeaders(ingestApiKey ? { 'x-api-key': ingestApiKey } : undefined);
   let response: Response;
 
   try {
