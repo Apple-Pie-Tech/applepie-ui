@@ -1,7 +1,7 @@
 import { fetch } from 'expo/fetch';
 import { Platform } from 'react-native';
 
-import { getProvisionEndpoint } from '@/constants/provision';
+import { getProvisionEndpoint, provisionApiKey } from '@/constants/provision';
 
 export type ProvisionUniversePoint = {
   audio_url?: string;
@@ -81,6 +81,10 @@ export async function createPodcast(label: string): Promise<ProvisionPodcastDeta
       body: JSON.stringify({ label }),
       headers: {
         'Content-Type': 'application/json',
+        // Only on the write. The API gates POST /podcasts and leaves the reads
+        // open, so sending it on every GET would imply a check that is not
+        // there.
+        ...(provisionApiKey ? { 'x-api-key': provisionApiKey } : {}),
       },
       method: 'POST',
     }),

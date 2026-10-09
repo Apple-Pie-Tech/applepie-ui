@@ -44,6 +44,7 @@ EXPO_PUBLIC_REVENUECAT_IOS_API_KEY=
 EXPO_PUBLIC_REVENUECAT_ANDROID_API_KEY=
 EXPO_PUBLIC_INGEST_API_URL=http://127.0.0.1:8000
 EXPO_PUBLIC_INGEST_API_KEY=
+EXPO_PUBLIC_PROVISION_API_KEY=
 EXPO_PUBLIC_PROVISION_API_URL=http://127.0.0.1:8002
 ```
 
@@ -54,7 +55,12 @@ Notes:
 - `EXPO_PUBLIC_SUPABASE_URL` and `EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY` are required for Supabase Auth.
 - `EXPO_PUBLIC_REVENUECAT_IOS_API_KEY` and `EXPO_PUBLIC_REVENUECAT_ANDROID_API_KEY` are required on native builds, RevenueCat stays a web no-op.
 - `EXPO_PUBLIC_INGEST_API_URL` is required and points at the local `data-ingestion` API, e.g. `http://127.0.0.1:8000`.
-- `EXPO_PUBLIC_INGEST_API_KEY` is only needed if ingest auth is later enforced.
+- `EXPO_PUBLIC_INGEST_API_KEY` and `EXPO_PUBLIC_PROVISION_API_KEY` are sent as
+  `x-api-key` on `POST /ingest` and `POST /podcasts` respectively -- the two
+  endpoints that cost money to call. Each API skips the check when its own key is
+  unset, so both can stay blank locally. Both are inlined into the client bundle
+  like every `EXPO_PUBLIC_*` value, so they deter drive-by abuse of a public URL
+  rather than authenticating anyone.
 - `EXPO_PUBLIC_PROVISION_API_URL` is required and points at the local `data-provision-api`, e.g. `http://127.0.0.1:8002`.
 
 ## What is live in the UI now
