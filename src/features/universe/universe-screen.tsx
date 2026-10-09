@@ -364,7 +364,7 @@ export function UniverseScreen({ mode = 'universe' }: { mode?: UniverseMode } = 
   const morphProgress = useRef(new Animated.Value(mode === 'record' ? 0 : 1)).current;
   const pathname = usePathname();
   const isOnRoute =
-    (mode === 'record' && pathname === '/record') || (mode === 'universe' && pathname === '/');
+    (mode === 'record' && pathname === '/record') || (mode === 'universe' && pathname === '/universe');
   const queryValue = normalize(query);
   const pendingTopicId = readSearchParam(params.topicId);
   const pendingMenu = readSearchParam(params.menu);
@@ -890,7 +890,7 @@ export function UniverseScreen({ mode = 'universe' }: { mode?: UniverseMode } = 
       setMenuOpen(pendingMenu === 'generate');
     }
 
-    router.replace('/' as Href);
+    router.replace('/universe' as Href);
   }, [
     isOnRoute,
     isRecordMode,

@@ -25,14 +25,18 @@ export function buildUniverseReturnPath({
   menu: 'generate';
   topicId: string;
 }): string {
-  return `/?topicId=${encodeURIComponent(topicId)}&menu=${encodeURIComponent(menu)}`;
+  return `/universe?topicId=${encodeURIComponent(topicId)}&menu=${encodeURIComponent(menu)}`;
 }
+
+// `/` is the public landing page, so a sign-in with no usable returnTo falls
+// back to the universe rather than bouncing the user out of the app.
+const DEFAULT_RETURN_TO = '/universe';
 
 export function normalizeReturnTo(value: string | string[] | undefined): string {
   const route = readSearchParam(value)?.trim();
 
-  if (!route || !route.startsWith('/') || route.startsWith('/auth')) {
-    return '/';
+  if (!route || route === '/' || !route.startsWith('/') || route.startsWith('/auth')) {
+    return DEFAULT_RETURN_TO;
   }
 
   return route;

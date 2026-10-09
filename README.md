@@ -16,6 +16,30 @@ npm run ios
 npm run android
 ```
 
+## Routes
+
+`/` is the public "coming soon" landing page. It explains the product, carries no
+sign-in control, and links nowhere. The app sits behind it:
+
+- `/universe` -- the memory graph (the Universe tab)
+- `/record` -- the recording flow
+- `/account` -- account settings
+- `/auth` -- Google sign-in
+
+`expo export --platform web` statically renders one HTML file per route, so the
+set of emitted files is the set CloudFront has to serve. The viewer-request
+function in `infrastructure/aws/frontend.tf` appends `.html` to any extensionless
+path, so `/universe` resolves without an infrastructure change.
+
+Two details are load-bearing:
+
+- `src/app/(tabs)/_layout.tsx` sets `unstable_settings.anchor` to `universe`.
+  The group's anchor used to be implied by its `index` route; without the
+  explicit anchor the browser back button leaves the tab group instead of
+  returning to the previously focused tab.
+- On native, `src/app/index.tsx` redirects to `/universe`. There is no public URL
+  to guard in the installed app, so it still opens on the memory graph.
+
 ## Automated verification
 
 Use the same commands locally that CI runs for the checked-in non-microphone path:

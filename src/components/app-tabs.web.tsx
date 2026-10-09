@@ -33,7 +33,7 @@ export default function AppTabs() {
       <TabSlot style={styles.slot} />
       <TabList asChild>
         <FloatingTabBar>
-          <TabTrigger name="index" href="/" asChild>
+          <TabTrigger name="universe" href={'/universe' as Href} asChild>
             <TabPill
               accessibilityLabel="Universe"
               icon={{

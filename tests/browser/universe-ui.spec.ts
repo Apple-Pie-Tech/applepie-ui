@@ -58,7 +58,7 @@ type MockRouteStep =
     };
 
 test.describe('root shell static-web safety', () => {
-  test('hydration / route stays safe for a direct dark-mode load', async ({ page }, testInfo) => {
+  test('hydration /universe route stays safe for a direct dark-mode load', async ({ page }, testInfo) => {
     const finalizeDiagnostics = captureBrowserDiagnostics(page, testInfo);
     await page.emulateMedia({ colorScheme: 'dark' });
     await mockProvisionApi(page, {
@@ -66,9 +66,9 @@ test.describe('root shell static-web safety', () => {
       universeResponse: LIVE_UNIVERSE_RESPONSE,
     });
 
-    await page.goto('/');
+    await page.goto('/universe');
 
-    await expect(page).toHaveURL(/\/$/);
+    await expect(page).toHaveURL(/\/universe$/);
     await expect(page.getByRole('tab', { name: 'Universe' })).toBeVisible();
     await expect(page.getByRole('tab', { name: 'Record' })).toBeVisible();
     await expect(page.getByText('Loading live universe…')).toHaveCount(0, { timeout: 10_000 });
@@ -104,7 +104,7 @@ test.describe('root shell static-web safety', () => {
       universeResponse: LIVE_UNIVERSE_RESPONSE,
     });
 
-    await page.goto('/');
+    await page.goto('/universe');
 
     const universeTab = page.getByRole('tab', { name: 'Universe' });
     const recordTab = page.getByRole('tab', { name: 'Record' });
@@ -118,7 +118,7 @@ test.describe('root shell static-web safety', () => {
 
     await universeTab.click();
 
-    await expect(page).toHaveURL(/\/$/);
+    await expect(page).toHaveURL(/\/universe$/);
     await expect(page.getByText('Tap a glow to enter a topic')).toBeVisible();
 
     await finalizeDiagnostics({ failOnDiagnostics: true });
@@ -126,14 +126,14 @@ test.describe('root shell static-web safety', () => {
 });
 
 test.describe('browser navigation parity', () => {
-  test('route parity / and /record direct loads keep the selected tab and route UI aligned', async ({ page }, testInfo) => {
+  test('route parity /universe and /record direct loads keep the selected tab and route UI aligned', async ({ page }, testInfo) => {
     const finalizeDiagnostics = captureBrowserDiagnostics(page, testInfo);
     await mockProvisionApi(page, {
       initialPodcasts: [],
       universeResponse: LIVE_UNIVERSE_RESPONSE,
     });
 
-    await page.goto('/');
+    await page.goto('/universe');
     await expectUniverseRoute(page);
 
     await page.goto('/record');
@@ -148,14 +148,14 @@ test.describe('browser navigation parity', () => {
     await finalizeDiagnostics({ failOnDiagnostics: true });
   });
 
-  test('history parity browser back and forward keep / and /record in sync with the shared shell', async ({ page }, testInfo) => {
+  test('history parity browser back and forward keep /universe and /record in sync with the shared shell', async ({ page }, testInfo) => {
     const finalizeDiagnostics = captureBrowserDiagnostics(page, testInfo);
     await mockProvisionApi(page, {
       initialPodcasts: [],
       universeResponse: LIVE_UNIVERSE_RESPONSE,
     });
 
-    await page.goto('/');
+    await page.goto('/universe');
     await expectUniverseRoute(page);
 
     await page.getByRole('tab', { name: 'Record' }).click();
@@ -194,9 +194,9 @@ test.describe('browser navigation parity', () => {
 });
 
 test.describe('non-microphone universe verification', () => {
-  test('web parity baseline / route shows mocked live universe state and podcast create/status progression', async ({ page }, testInfo) => {
+  test('web parity baseline /universe route shows mocked live universe state and podcast create/status progression', async ({ page }, testInfo) => {
     const finalizeDiagnostics = captureBrowserDiagnostics(page, testInfo);
-    await primeSignedInSession(page, '/', { entitled: true });
+    await primeSignedInSession(page, '/universe', { entitled: true });
     const provisionApi = await mockProvisionApi(page, {
       detailSequence: [RUNNING_PODCAST, RUNNING_PODCAST, COMPLETED_PODCAST],
       initialPodcasts: [],
@@ -226,14 +226,14 @@ test.describe('non-microphone universe verification', () => {
     await finalizeDiagnostics({ failOnDiagnostics: true });
   });
 
-  test('provision outage / route shows the preview universe when live /universe data fails', async ({ page }, testInfo) => {
+  test('provision outage /universe route shows the preview universe when live /universe data fails', async ({ page }, testInfo) => {
     const finalizeDiagnostics = captureBrowserDiagnostics(page, testInfo);
     await mockProvisionApi(page, {
       initialPodcasts: [],
       universeError: { detail: 'Mocked outage' },
     });
 
-    await page.goto('/');
+    await page.goto('/universe');
 
     await expect(page.getByText('Loading live universe…')).toBeVisible();
     await expect(page.getByText('Mocked outage. Showing preview map.')).toBeVisible({ timeout: 10_000 });
@@ -246,19 +246,19 @@ test.describe('non-microphone universe verification', () => {
     });
   });
 
-  test('provision network / route shows explicit browser-safe fallback and keeps navigation usable', async ({ page }, testInfo) => {
+  test('provision network /universe route shows explicit browser-safe fallback and keeps navigation usable', async ({ page }, testInfo) => {
     const finalizeDiagnostics = captureBrowserDiagnostics(page, testInfo);
 
-    await page.route('**/universe', async (route) => {
+    await page.route('**/universe', provisionApiRoute(async (route) => {
       await pause(250);
       await route.abort('failed');
-    });
-    await page.route('**/podcasts', async (route) => {
+    }));
+    await page.route('**/podcasts', provisionApiRoute(async (route) => {
       await pause(250);
       await route.abort('failed');
-    });
+    }));
 
-    await page.goto('/');
+    await page.goto('/universe');
 
     await expect(page.getByText('Loading live universe…')).toBeVisible();
     await expect(page.getByText(/Provision API is unreachable from this browser\..*Showing preview map\./)).toBeVisible({
@@ -278,12 +278,12 @@ test.describe('non-microphone universe verification', () => {
     });
   });
 
-  test('web parity fallback /universe route shows the unmatched-route state', async ({ page }, testInfo) => {
+  test('web parity fallback /not-a-real-route shows the unmatched-route state', async ({ page }, testInfo) => {
     const finalizeDiagnostics = captureBrowserDiagnostics(page, testInfo);
 
-    await page.goto('/universe');
+    await page.goto('/not-a-real-route');
 
-    await expect(page).toHaveURL(/\/universe$/);
+    await expect(page).toHaveURL(/\/not-a-real-route$/);
     await expect(page.locator('body')).toContainText(/Unmatched Route|Page could not be found/i);
     await expect(page.getByText('Tap a glow to enter a topic')).toHaveCount(0);
 
@@ -295,14 +295,14 @@ test.describe('non-microphone universe verification', () => {
 });
 
 test.describe('universe interaction parity', () => {
-  test('topic parity / search results and topic labels stay browser-safe on web', async ({ page }, testInfo) => {
+  test('topic parity /universe search results and topic labels stay browser-safe on web', async ({ page }, testInfo) => {
     const finalizeDiagnostics = captureBrowserDiagnostics(page, testInfo);
     await mockProvisionApi(page, {
       initialPodcasts: [],
       universeResponse: LIVE_UNIVERSE_RESPONSE,
     });
 
-    await page.goto('/');
+    await page.goto('/universe');
 
     await expect(page.getByText('Loading live universe…')).toHaveCount(0, { timeout: 10_000 });
     await page.getByLabel('Search memories').click();
@@ -321,9 +321,9 @@ test.describe('universe interaction parity', () => {
     await finalizeDiagnostics({ failOnDiagnostics: true });
   });
 
-  test('generation parity / podcast flow reaches ready state from the web action menu', async ({ page }, testInfo) => {
+  test('generation parity /universe podcast flow reaches ready state from the web action menu', async ({ page }, testInfo) => {
     const finalizeDiagnostics = captureBrowserDiagnostics(page, testInfo);
-    await primeSignedInSession(page, '/', { entitled: true });
+    await primeSignedInSession(page, '/universe', { entitled: true });
     const provisionApi = await mockProvisionApi(page, {
       detailSequence: [RUNNING_PODCAST, COMPLETED_PODCAST],
       initialPodcasts: [],
@@ -347,9 +347,9 @@ test.describe('universe interaction parity', () => {
     await finalizeDiagnostics({ failOnDiagnostics: true });
   });
 
-  test('generation parity / podcast refresh failures stay explicit and recover on web', async ({ page }, testInfo) => {
+  test('generation parity /universe podcast refresh failures stay explicit and recover on web', async ({ page }, testInfo) => {
     const finalizeDiagnostics = captureBrowserDiagnostics(page, testInfo);
-    await primeSignedInSession(page, '/', { entitled: true });
+    await primeSignedInSession(page, '/universe', { entitled: true });
     await mockProvisionApi(page, {
       detailSequence: [{ abort: 'failed' }, COMPLETED_PODCAST],
       initialPodcasts: [],
@@ -376,7 +376,7 @@ test.describe('universe interaction parity', () => {
 });
 
 test.describe('universe layout viewport parity', () => {
-  test('universe layout / keeps the topic sheet composed across desktop and mobile browser viewports', async ({ page }, testInfo) => {
+  test('universe layout /universe keeps the topic sheet composed across desktop and mobile browser viewports', async ({ page }, testInfo) => {
     const finalizeDiagnostics = captureBrowserDiagnostics(page, testInfo);
     await mockProvisionApi(page, {
       initialPodcasts: [],
@@ -385,7 +385,7 @@ test.describe('universe layout viewport parity', () => {
 
     for (const viewport of [DESKTOP_VIEWPORT, SHORT_MOBILE_VIEWPORT]) {
       await page.setViewportSize({ width: viewport.width, height: viewport.height });
-      await page.goto('/');
+      await page.goto('/universe');
 
       await expect(page.getByText('Loading live universe…')).toHaveCount(0, { timeout: 10_000 });
       await page.getByLabel('Search memories').click();
@@ -570,7 +570,7 @@ test.describe('browser-safe record route parity', () => {
     await expect(page.getByText('Saved').first()).toBeVisible({ timeout: 10_000 });
     await expect(page.getByRole('tab', { name: 'Universe' })).toBeVisible({ timeout: 10_000 });
     await page.getByRole('tab', { name: 'Universe' }).click();
-    await expect(page).toHaveURL(/\/$/);
+    await expect(page).toHaveURL(/\/universe$/);
     await expect(page.getByText('Tap a glow to enter a topic')).toBeVisible();
 
     await finalizeDiagnostics({ failOnDiagnostics: true });
@@ -597,7 +597,7 @@ test.describe('browser-safe record route parity', () => {
     await expect(page.getByRole('tab', { name: 'Universe' })).toBeVisible();
 
     await page.getByRole('tab', { name: 'Universe' }).click();
-    await expect(page).toHaveURL(/\/$/);
+    await expect(page).toHaveURL(/\/universe$/);
     await expect(page.getByText('Tap a glow to enter a topic')).toBeVisible();
 
     await finalizeDiagnostics({ failOnDiagnostics: true });
@@ -630,7 +630,7 @@ test.describe('browser-safe record route parity', () => {
     await expect(page.getByRole('tab', { name: 'Universe' })).toBeVisible();
 
     await page.getByRole('tab', { name: 'Universe' }).click();
-    await expect(page).toHaveURL(/\/$/);
+    await expect(page).toHaveURL(/\/universe$/);
     await expect(page.getByText('Tap a glow to enter a topic')).toBeVisible();
 
     await finalizeDiagnostics({ failOnDiagnostics: true });
@@ -677,7 +677,7 @@ test.describe('browser-safe record route parity', () => {
       universeResponse: LIVE_UNIVERSE_RESPONSE,
     });
 
-    await page.goto('/');
+    await page.goto('/universe');
 
     await expect(page.getByText('Loading live universe…')).toHaveCount(0, { timeout: 10_000 });
     await page.getByLabel('Search memories').click();
@@ -695,7 +695,7 @@ test.describe('browser-safe record route parity', () => {
 
     await primeSignedInSession(page, returnTo, { entitled: true });
 
-    await expect(page).toHaveURL(/\/$/);
+    await expect(page).toHaveURL(/\/universe$/);
     await expect(page.getByText('Podcast episode')).toBeVisible();
     await clickGenerationAction(page, 'Podcast episode');
 
@@ -967,7 +967,7 @@ async function expectUniverseRoute(page: Page) {
   const universeTab = page.getByRole('tab', { name: 'Universe' });
   const recordTab = page.getByRole('tab', { name: 'Record' });
 
-  await expect(page).toHaveURL(/\/$/);
+  await expect(page).toHaveURL(/\/universe$/);
   await expect(universeTab).toBeVisible();
   await expect(recordTab).toBeVisible();
   await expect(universeTab).toHaveAttribute('aria-selected', 'true');
@@ -1009,7 +1009,7 @@ async function mockProvisionApi(
   let createIndex = 0;
   let detailIndex = 0;
 
-  await page.route('**/universe', async (route) => {
+  await page.route('**/universe', provisionApiRoute(async (route) => {
     await pause(250);
 
     if (options.universeError) {
@@ -1018,9 +1018,9 @@ async function mockProvisionApi(
     }
 
     await fulfillJson(route, 200, options.universeResponse ?? LIVE_UNIVERSE_RESPONSE);
-  });
+  }));
 
-  await page.route('**/podcasts', async (route) => {
+  await page.route('**/podcasts', provisionApiRoute(async (route) => {
     const method = route.request().method();
 
     if (method === 'GET') {
@@ -1037,9 +1037,9 @@ async function mockProvisionApi(
     }
 
     await route.fallback();
-  });
+  }));
 
-  await page.route('**/podcasts/*', async (route) => {
+  await page.route('**/podcasts/*', provisionApiRoute(async (route) => {
     callCounts.detailCalls += 1;
     await pause(900);
     const next = toMockRouteStep(
@@ -1047,7 +1047,7 @@ async function mockProvisionApi(
     );
     detailIndex += 1;
     await fulfillMockRoute(route, next ?? { body: PENDING_PODCAST, status: 200 });
-  });
+  }));
 
   return callCounts;
 }
@@ -1066,6 +1066,23 @@ function toMockRouteStep(step: object | MockRouteStep | undefined): MockRouteSte
   }
 
   return { body: step, status: 200 };
+}
+
+/**
+ * The UI route `/universe` and the provision API endpoint `/universe` share a
+ * path, and a `**` glob matches the page navigation as well as the fetch. Mocks
+ * built here only answer the API call and let document requests through, so
+ * navigating to `/universe` still loads the app instead of the mocked JSON.
+ */
+function provisionApiRoute(handler: (route: Route) => Promise<void>) {
+  return async (route: Route) => {
+    if (route.request().resourceType() === 'document') {
+      await route.continue();
+      return;
+    }
+
+    await handler(route);
+  };
 }
 
 async function fulfillMockRoute(route: Route, step: MockRouteStep) {
