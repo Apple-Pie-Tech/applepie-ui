@@ -79,7 +79,15 @@ jobs:
         # http://127.0.0.1:8081, so there is no separate server step. That wait
         # is what warms Metro: the dev server does not answer until it has
         # bundled, so the first test does not pay for the cold build.
-        run: npm run test:playwright-ui
+        #
+        # --retries only here, not in playwright.config.ts: locally a flake
+        # should be visible, but on a shared runner the universe route's first
+        # render has been observed to miss its 5s assertion once and pass on the
+        # same commit a minute later. Without a retry that single flake blocks a
+        # deploy, which trains people to re-run red pipelines instead of reading
+        # them. A test that needs the retry every time is a real failure and
+        # shows up as "flaky" in the summary.
+        run: npm run test:playwright-ui -- --retries=2
 
       - name: Upload failure traces
         # Only on a red run, and only then: the config keeps traces and
